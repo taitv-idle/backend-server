@@ -7,7 +7,7 @@ const { responseReturn } = require('../../utiles/response');
 const { mongo: { ObjectId } } = require('mongoose');
 
 // Khởi tạo Stripe với API key
-const stripe = require('stripe')('sk_test_51NkKjoLGiNne9ofSCUr0znwqrkFPqXjocWtVkHX9RrBWg65tiaHW4Vk3XE5XemAIL239JVXAcGTsfuKoHA1leFHV00KIobgcvE');
+const stripe = require('stripe')(process.env.STRIP_KEY);
 
 class PaymentController {
     /**
