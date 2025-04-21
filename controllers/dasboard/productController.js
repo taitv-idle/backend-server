@@ -18,15 +18,14 @@ class ProductController {
 
         form.parse(req, async (err, field, files) => {
             if (err) {
-                return responseReturn(res, 400, { error: 'Lỗi khi xử lý form' });
+                return responseReturn(res, 400, { error: 'Lỗi khi xử lý biểu mẫu' });
             }
 
             const { name, category, description, stock, price, discount, shopName, brand } = field;
             const { images } = files;
 
-            // Kiểm tra các trường bắt buộc
             if (!name || !category || !price || !stock || !images) {
-                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: name, category, price, stock, images' });
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: tên, danh mục, giá, số lượng, hình ảnh' });
             }
 
             const trimmedName = name.trim();
@@ -55,16 +54,16 @@ class ProductController {
                     brand: brand?.trim()
                 });
 
-                responseReturn(res, 201, { product, message: 'Product Added Successfully' });
+                responseReturn(res, 201, { product, message: 'Thêm sản phẩm thành công' });
             } catch (error) {
-                responseReturn(res, 500, { error: error.message });
+                responseReturn(res, 500, { error: 'Lỗi server khi thêm sản phẩm: ' + error.message });
             }
         });
     };
 
     products_get = async (req, res) => {
         const { page, searchValue, parPage } = req.query;
-        const { id } = req; // sellerId
+        const { id } = req;
         const skipPage = parseInt(parPage) * (parseInt(page) - 1);
 
         try {
@@ -88,17 +87,16 @@ class ProductController {
 
             responseReturn(res, 200, { products, totalProduct });
         } catch (error) {
-            responseReturn(res, 500, { error: error.message });
+            responseReturn(res, 500, { error: 'Lỗi server khi lấy danh sách sản phẩm: ' + error.message });
         }
     };
 
-    // Sửa hàm product_delete trong ProductController.js
     product_delete = async (req, res) => {
         const { productId } = req.params;
-        const { id } = req; // sellerId từ token authentication
+        const { id } = req;
 
-        console.log('Received productId:', productId); // Log productId nhận được
-        console.log('Seller ID from token:', id); // Log sellerId
+        console.log('Received productId:', productId);
+        console.log('Seller ID from token:', id);
 
         try {
             const product = await productModel.findOneAndDelete({
@@ -107,13 +105,13 @@ class ProductController {
             });
 
             if (!product) {
-                console.log('Product not found with _id:', productId, 'and sellerId:', id);
+                console.log('Không tìm thấy sản phẩm với _id:', productId, 'và sellerId:', id);
                 return responseReturn(res, 404, {
                     error: 'Sản phẩm không tồn tại hoặc không thuộc quyền quản lý của bạn'
                 });
             }
 
-            console.log('Deleted product:', product);
+            console.log('Đã xóa sản phẩm:', product);
             return responseReturn(res, 200, {
                 message: 'Xóa sản phẩm thành công',
                 productId: product._id.toString()
@@ -128,7 +126,7 @@ class ProductController {
 
     product_details = async (req, res) => {
         const { productId } = req.params;
-        const { id } = req; // sellerId
+        const { id } = req;
 
         try {
             const product = await productModel.findOne({ _id: productId, sellerId: id });
@@ -144,7 +142,7 @@ class ProductController {
     product_update = async (req, res) => {
         const { name, description, stock, price, category, discount, brand, productId } = req.body;
         if (!productId || !name || !category || !price || !stock) {
-            return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: productId, name, category, price, stock' });
+            return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: productId, tên, danh mục, giá, số lượng' });
         }
 
         const trimmedName = name.trim();
@@ -170,9 +168,9 @@ class ProductController {
                 return responseReturn(res, 404, { error: 'Sản phẩm không tồn tại' });
             }
 
-            responseReturn(res, 200, { product, message: 'Product Updated Successfully' });
+            responseReturn(res, 200, { product, message: 'Cập nhật sản phẩm thành công' });
         } catch (error) {
-            responseReturn(res, 500, { error: error.message });
+            responseReturn(res, 500, { error: 'Lỗi server khi cập nhật sản phẩm: ' + error.message });
         }
     };
 
@@ -184,7 +182,7 @@ class ProductController {
             const { newImage } = files;
 
             if (err || !oldImage || !newImage || !productId) {
-                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ: oldImage, newImage, productId' });
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ: hình ảnh cũ, hình ảnh mới, productId' });
             }
 
             try {
@@ -202,9 +200,9 @@ class ProductController {
                 product.images[index] = result.url;
 
                 await product.save();
-                responseReturn(res, 200, { product, message: 'Product Image Updated Successfully' });
+                responseReturn(res, 200, { product, message: 'Cập nhật hình ảnh sản phẩm thành công' });
             } catch (error) {
-                responseReturn(res, 500, { error: error.message });
+                responseReturn(res, 500, { error: 'Lỗi server khi cập nhật hình ảnh: ' + error.message });
             }
         });
     };

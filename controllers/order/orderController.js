@@ -1,4 +1,3 @@
-// Import các model liên quan
 const authOrderModel = require('../../models/authOrder')
 const customerOrder = require('../../models/customerOrder')
 const myShopWallet = require('../../models/myShopWallet')
@@ -8,104 +7,254 @@ const moment = require("moment")
 const { responseReturn } = require('../../utiles/response')
 const { mongo: {ObjectId}} = require('mongoose')
 const {config} = require("dotenv");
-
+require('mongoose')
 // Cấu hình Stripe
 const stripe = require('stripe')(process.env.stripe_sk)
 
 // Controller xử lý các nghiệp vụ liên quan đến đơn hàng
 class orderController{
-
-    // Hàm kiểm tra thanh toán
-    paymentCheck = async (id) => {
+    // Hàm hỗ trợ: Gửi thông báo hủy đơn hàng
+    async sendOrderCancellationNotification(customerId, orderId) {
+        // Triển khai logic gửi thông báo (email, notification, etc.)
+        console.log(`Đã gửi thông báo hủy đơn hàng #${orderId} cho khách hàng ${customerId}`);
+    }
+    // Hàm hỗ trợ: Kiểm tra và hủy đơn hàng nếu chưa thanh toán
+    async paymentCheck(id) {
+        const session = await mongoose.startSession();
         try {
-            const order = await customerOrder.findById(id)
+            session.startTransaction();
+
+            const order = await customerOrder.findById(id).session(session);
+            if (!order) {
+                throw new Error('Đơn hàng không tồn tại');
+            }
+
             if (order.payment_status === 'unpaid') {
                 await customerOrder.findByIdAndUpdate(id, {
-                    delivery_status: 'cancelled'
-                })
+                    delivery_status: 'cancelled',
+                    cancellation_reason: 'Không thanh toán trong thời gian quy định'
+                }, { session });
+
                 await authOrderModel.updateMany({
                     orderId: id
-                },{
-                    delivery_status: 'cancelled'
-                })
+                }, {
+                    delivery_status: 'cancelled',
+                    cancellation_reason: 'Không thanh toán trong thời gian quy định'
+                }, { session });
+
+                await this.sendOrderCancellationNotification(order.customerId, id);
             }
-            return true
+
+            await session.commitTransaction();
+            return true;
         } catch (error) {
-            console.log(error)
+            await session.abortTransaction();
+            console.error('Payment check error:', error);
+            throw error;
+        } finally {
+            session.endSession();
         }
     }
 
+
     // Đặt hàng
     place_order = async (req, res) => {
-        const {price, products, shipping_fee, shippingInfo, userId } = req.body
-        let authorOrderData = []
-        let cardId = []
-        const tempDate = moment(Date.now()).format('LLL')
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
 
-        let customerOrderProduct = []
+            const { price, products, shipping_fee, shippingInfo, userId, paymentMethod } = req.body;
+            const tempDate = moment(Date.now()).format('LLL');
 
-        for (let i = 0; i < products.length; i++) {
-            const pro = products[i].products
-            for (let j = 0; j < pro.length; j++) {
-                const tempCusPro = pro[j].productInfo;
-                tempCusPro.quantity = pro[j].quantity
-                customerOrderProduct.push(tempCusPro)
-                if (pro[j]._id) {
-                    cardId.push(pro[j]._id)
+            // Validate input
+            if (!price || !products || !shippingInfo || !userId) {
+                throw new Error('Thiếu thông tin bắt buộc');
+            }
+
+            let authorOrderData = [];
+            let cardId = [];
+            let customerOrderProduct = [];
+
+            // Xử lý danh sách sản phẩm
+            for (const shop of products) {
+                for (const item of shop.products) {
+                    const productInfo = { ...item.productInfo, quantity: item.quantity };
+                    customerOrderProduct.push(productInfo);
+                    if (item._id) cardId.push(item._id);
                 }
             }
-        }
 
-        try {
-            const order = await customerOrder.create({
+            // Tạo đơn hàng chính
+            const order = await customerOrder.create([{
                 customerId: userId,
                 shippingInfo,
                 products: customerOrderProduct,
                 price: price + shipping_fee,
-                payment_status: 'unpaid',
+                payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
                 delivery_status: 'pending',
+                payment_method: paymentMethod,
                 date: tempDate
-            })
+            }], { session });
 
-            for (let i = 0; i < products.length; i++) {
-                const pro = products[i].products
-                const pri = products[i].price
-                const sellerId = products[i].sellerId
-                let storePor = []
-
-                for (let j = 0; j < pro.length; j++) {
-                    const tempPro = pro[j].productInfo
-                    tempPro.quantity = pro[j].quantity
-                    storePor.push(tempPro)
-                }
+            // Tạo đơn hàng cho từng seller
+            for (const shop of products) {
+                const sellerId = shop.sellerId;
+                const storePor = shop.products.map(item => ({
+                    ...item.productInfo,
+                    quantity: item.quantity
+                }));
 
                 authorOrderData.push({
-                    orderId: order.id,
+                    orderId: order[0].id,
                     sellerId,
                     products: storePor,
-                    price: pri,
-                    payment_status: 'unpaid',
+                    price: shop.price,
+                    payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
                     shippingInfo: 'Kho chính Easy',
                     delivery_status: 'pending',
+                    payment_method: paymentMethod,
                     date: tempDate
-                })
+                });
             }
 
-            await authOrderModel.insertMany(authorOrderData)
+            await authOrderModel.insertMany(authorOrderData, { session });
 
-            for (let k = 0; k < cardId.length; k++) {
-                await cardModel.findByIdAndDelete(cardId[k])
+            // Xóa sản phẩm khỏi giỏ hàng
+            if (cardId.length > 0) {
+                await cardModel.deleteMany({ _id: { $in: cardId } }, { session });
             }
 
-            // Sau 15 giây, kiểm tra trạng thái thanh toán
-            setTimeout(() => {
-                this.paymentCheck(order.id)
-            }, 15000)
+            await session.commitTransaction();
 
-            responseReturn(res, 200, {message: "Đặt hàng thành công", orderId: order.id})
+            // Nếu là COD, xác nhận ngay
+            if (paymentMethod === 'cod') {
+                await this.confirmPayment(order[0].id, 'cod');
+            } else {
+                // Stripe - đặt hẹn kiểm tra thanh toán sau 15 phút
+                setTimeout(() => this.paymentCheck(order[0].id), 900000); // 15 phút
+            }
+
+            responseReturn(res, 200, {
+                message: "Đặt hàng thành công",
+                orderId: order[0].id,
+                paymentMethod
+            });
 
         } catch (error) {
-            console.log(error.message)
+            await session.abortTransaction();
+            console.error('Place order error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi đặt hàng'
+            });
+        } finally {
+            session.endSession();
+        }
+    }
+// Xác nhận thanh toán COD
+    confirm_cod_payment = async (req, res) => {
+        try {
+            const order = await this.confirmPayment(req.params.orderId, 'cod');
+            responseReturn(res, 200, {
+                message: 'Xác nhận thanh toán COD thành công',
+                order
+            });
+        } catch (error) {
+            console.error('Confirm COD error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi xác nhận thanh toán COD'
+            });
+        }
+    }
+
+    // Xác nhận thanh toán Stripe
+    confirm_stripe_payment = async (req, res) => {
+        try {
+            const order = await this.confirmPayment(req.params.orderId, 'stripe');
+            responseReturn(res, 200, {
+                message: 'Xác nhận thanh toán Stripe thành công',
+                order
+            });
+        } catch (error) {
+            console.error('Confirm Stripe error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi xác nhận thanh toán Stripe'
+            });
+        }
+    }
+
+    // Tạo payment intent cho Stripe
+    create_payment_intent = async (req, res) => {
+        try {
+            const { amount, orderId } = req.body;
+
+            // Validate
+            if (!amount || !orderId) {
+                throw new Error('Thiếu thông tin bắt buộc');
+            }
+
+            const order = await customerOrder.findById(orderId);
+            if (!order) {
+                throw new Error('Đơn hàng không tồn tại');
+            }
+
+            // Tạo payment intent (sử dụng VND)
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: Math.round(amount),
+                currency: 'vnd',
+                metadata: { orderId },
+                description: `Thanh toán cho đơn hàng #${orderId}`,
+                payment_method_types: ['card'],
+                capture_method: 'automatic'
+            });
+
+            responseReturn(res, 200, {
+                clientSecret: paymentIntent.client_secret,
+                paymentIntentId: paymentIntent.id
+            });
+        } catch (error) {
+            console.error('Create payment intent error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi tạo payment intent'
+            });
+        }
+    }
+
+    // Xử lý Stripe webhook
+    handle_stripe_webhook = async (req, res) => {
+        const sig = req.headers['stripe-signature'];
+        const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+        let event;
+        try {
+            event = stripe.webhooks.constructEvent(
+                req.body,
+                sig,
+                endpointSecret
+            );
+        } catch (err) {
+            console.error('Webhook signature verification failed:', err);
+            return responseReturn(res, 400, {
+                message: `Webhook Error: ${err.message}`
+            });
+        }
+
+        try {
+            // Xử lý sự kiện thanh toán thành công
+            if (event.type === 'payment_intent.succeeded') {
+                const paymentIntent = event.data.object;
+                const orderId = paymentIntent.metadata.orderId;
+
+                // Xác nhận thanh toán trong hệ thống
+                await this.confirmPayment(orderId, 'stripe');
+                console.log(`Xác nhận thanh toán thành công cho đơn hàng ${orderId}`);
+            }
+
+            responseReturn(res, 200, { received: true });
+        } catch (error) {
+            console.error('Webhook processing error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi xử lý webhook'
+            });
         }
     }
 
@@ -381,6 +530,69 @@ class orderController{
 
         } catch (error) {
             console.log(error.message)
+        }
+    }
+    // Hàm hỗ trợ: Xác nhận thanh toán chung
+    async confirmPayment(orderId, paymentMethod) {
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+
+            const order = await customerOrder.findById(orderId).session(session);
+            if (!order) {
+                throw new Error('Đơn hàng không tồn tại');
+            }
+
+            // Cập nhật trạng thái đơn hàng
+            await customerOrder.findByIdAndUpdate(orderId, {
+                payment_status: 'paid',
+                delivery_status: 'processing',
+                payment_method: paymentMethod
+            }, { session });
+
+            await authOrderModel.updateMany(
+                { orderId: new ObjectId(orderId) },
+                {
+                    payment_status: 'paid',
+                    delivery_status: 'processing',
+                    payment_method: paymentMethod
+                },
+                { session }
+            );
+
+            // Cập nhật ví nếu là thanh toán online
+            if (paymentMethod === 'stripe') {
+                const auOrder = await authOrderModel.find({
+                    orderId: new ObjectId(orderId)
+                }).session(session);
+
+                const time = moment(Date.now()).format('l');
+                const splitTime = time.split('/');
+
+                await myShopWallet.create([{
+                    amount: order.price,
+                    month: splitTime[0],
+                    year: splitTime[2]
+                }], { session });
+
+                for (const sellerOrder of auOrder) {
+                    await sellerWallet.create([{
+                        sellerId: sellerOrder.sellerId.toString(),
+                        amount: sellerOrder.price,
+                        month: splitTime[0],
+                        year: splitTime[2]
+                    }], { session });
+                }
+            }
+
+            await session.commitTransaction();
+            return order;
+        } catch (error) {
+            await session.abortTransaction();
+            console.error(`Confirm ${paymentMethod} payment error:`, error);
+            throw error;
+        } finally {
+            session.endSession();
         }
     }
 

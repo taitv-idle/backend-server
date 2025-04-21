@@ -193,57 +193,77 @@ class PaymentController {
     payment_request_confirm = async (req, res) => {
         const { paymentId } = req.body;
 
+        const session = await mongoose.startSession();
         try {
-            const payment = await withdrowRequest.findById(paymentId);
+            session.startTransaction();
+
+            // Kiểm tra yêu cầu
+            const payment = await withdrowRequest.findById(paymentId).session(session);
             if (!payment) {
-                return responseReturn(res, 404, { message: 'Không tìm thấy yêu cầu thanh toán' });
+                throw new Error('Không tìm thấy yêu cầu thanh toán');
             }
 
-            // Kiểm tra xem seller đã kết nối Stripe chưa
+            // Kiểm tra tài khoản Stripe
             const stripeAccount = await stripeModel.findOne({
-                sellerId: new ObjectId(payment.sellerId)
-            });
+                sellerId: payment.sellerId
+            }).session(session);
 
             if (!stripeAccount || !stripeAccount.stripeId) {
-                return responseReturn(res, 400, {
-                    message: 'Seller chưa kết nối tài khoản thanh toán'
-                });
+                throw new Error('Seller chưa kết nối tài khoản thanh toán');
             }
 
-            // Kiểm tra tài khoản Stripe có tồn tại không
-            try {
-                await stripe.accounts.retrieve(stripeAccount.stripeId);
-            } catch (err) {
-                return responseReturn(res, 400, {
-                    message: 'Tài khoản thanh toán không hợp lệ hoặc chưa được kích hoạt'
-                });
+            // Kiểm tra tài khoản Stripe hợp lệ
+            const account = await stripe.accounts.retrieve(stripeAccount.stripeId);
+            if (!account.details_submitted || account.payouts_enabled !== true) {
+                throw new Error('Tài khoản thanh toán chưa sẵn sàng nhận tiền');
             }
 
             // Thực hiện chuyển tiền
             const transfer = await stripe.transfers.create({
-                amount: payment.amount * 100,
-                currency: 'usd',
-                destination: stripeAccount.stripeId
+                amount: payment.amount * 100, // Chuyển sang cent
+                currency: 'vnd',
+                destination: stripeAccount.stripeId,
+                description: `Rút tiền cho seller ${payment.sellerId}`
             });
 
-            await withdrowRequest.findByIdAndUpdate(paymentId, {
-                status: 'success',
-                transferId: transfer.id // Lưu ID giao dịch để tra cứu sau này
-            });
+            // Cập nhật trạng thái yêu cầu
+            await withdrowRequest.findByIdAndUpdate(
+                paymentId,
+                {
+                    status: 'success',
+                    transferId: transfer.id,
+                    processDate: new Date()
+                },
+                { session }
+            );
+
+            await session.commitTransaction();
 
             responseReturn(res, 200, {
-                message: 'Xác nhận yêu cầu thành công'
+                message: 'Xác nhận yêu cầu thành công',
+                transferId: transfer.id
             });
 
         } catch (error) {
+            await session.abortTransaction();
             console.error('Payment confirm error:', error);
-            let message = 'Lỗi khi xác nhận yêu cầu';
-            if (error.type === 'StripeInvalidRequestError') {
-                message = 'Lỗi kết nối với hệ thống thanh toán';
+
+            // Cập nhật trạng thái thất bại
+            if (paymentId) {
+                await withdrowRequest.findByIdAndUpdate(paymentId, {
+                    status: 'failed',
+                    failureReason: error.message
+                });
             }
-            responseReturn(res, 500, { message });
+
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi xác nhận yêu cầu'
+            });
+        } finally {
+            session.endSession();
         }
     }
+
 }
 
 module.exports = new PaymentController();
