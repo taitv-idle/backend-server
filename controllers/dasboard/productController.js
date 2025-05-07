@@ -2,6 +2,7 @@ const formidable = require("formidable");
 const { responseReturn } = require("../../utiles/response");
 const cloudinary = require('cloudinary').v2;
 const productModel = require('../../models/productModel');
+const { createSlug } = require('../../utiles/createSlug');
 
 // Cấu hình Cloudinary một lần
 cloudinary.config({
@@ -29,9 +30,11 @@ class ProductController {
             }
 
             const trimmedName = name.trim();
-            const slug = trimmedName.split(' ').join('-');
 
             try {
+                // Tạo slug hợp lệ
+                const slug = await createSlug(trimmedName, productModel);
+
                 let allImageUrl = [];
                 const imageFiles = Array.isArray(images) ? images : [images];
 
@@ -146,9 +149,11 @@ class ProductController {
         }
 
         const trimmedName = name.trim();
-        const slug = trimmedName.split(' ').join('-');
 
         try {
+            // Tạo slug hợp lệ
+            const slug = await createSlug(trimmedName, productModel, productId);
+
             const product = await productModel.findByIdAndUpdate(
                 productId,
                 {

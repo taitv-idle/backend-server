@@ -5,6 +5,7 @@ const { responseReturn } = require("../../utiles/response")
 const queryProducts = require('../../utiles/queryProducts')
 const moment = require('moment')
 const { mongo: {ObjectId}} = require('mongoose')
+const {createSlug} = require('../../utiles/createSlug')
 
 class homeControllers{
 
@@ -126,49 +127,58 @@ query_products = async (req, res) => {
     }
  
 }
- 
 
-product_details = async (req, res) => {
-    const { slug } = req.params
-    try {
-        const product = await productModel.findOne({slug})
-        
-        const relatedProducts = await productModel.find({
-            $and: [{
-                _id: {
-                    $ne: product.id
-                }
-            },
-            {
-                category: {
-                    $eq: product.category 
-                }
+    product_details = async (req, res) => {
+        const { slug } = req.params;
+        try {
+            // Tìm sản phẩm với slug truyền vào (không cần chuẩn hóa lại)
+            const product = await productModel.findOne({ slug });
+    
+            if (!product) {
+                return responseReturn(res, 404, {
+                    message: "Không tìm thấy sản phẩm"
+                });
             }
-           ]
-        }).limit(12)
-        const moreProducts = await productModel.find({
-            $and: [{
-                _id: {
-                    $ne: product.id
+            
+            const relatedProducts = await productModel.find({
+                $and: [{
+                    _id: {
+                        $ne: product.id
+                    }
+                },
+                {
+                    category: {
+                        $eq: product.category 
+                    }
                 }
-            },
-            {
-                sellerId: {
-                    $eq: product.sellerId
+               ]
+            }).limit(12)
+            const moreProducts = await productModel.find({
+                $and: [{
+                    _id: {
+                        $ne: product.id
+                    }
+                },
+                {
+                    sellerId: {
+                        $eq: product.sellerId
+                    }
                 }
-            }
-           ]
-        }).limit(3)
-        responseReturn(res, 200, {
-            product,
-            relatedProducts,
-            moreProducts
-        })
+               ]
+            }).limit(3)
+            responseReturn(res, 200, {
+                product,
+                relatedProducts,
+                moreProducts
+            })
 
-    } catch (error) {
-        console.log(error.message)
+        } catch (error) {
+            console.log(error.message)
+            responseReturn(res, 500, {
+                message: "Lỗi server"
+            })
+        }
     }
-}
  
 
 submit_review = async (req, res) => {

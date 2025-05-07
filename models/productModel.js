@@ -1,4 +1,5 @@
 const {Schema, model} = require("mongoose");
+const {createSlug} = require('../utiles/createSlug');
 
 const productSchema = new Schema({
     sellerId: {
@@ -11,7 +12,13 @@ const productSchema = new Schema({
     },
     slug: {
         type: String,
-        required : true
+        required: true,
+        unique: true,
+        index: true,
+        validate: {
+            validator: (v) => /^[a-z0-9-]+$/.test(v),
+            message: 'Slug không hợp lệ'
+        }
     },
     category: {
         type: String,
@@ -64,7 +71,19 @@ productSchema.index({
         brand: 3,
         description: 2
     }
-
 })
 
-module.exports = model('products',productSchema)
+// Middleware tự động tạo slug trước khi save
+productSchema.pre('save', async function(next) {
+    if (this.isModified('name')) {
+        try {
+            this.slug = await createSlug(this.name, this.constructor, this._id);
+        } catch (error) {
+            next(error);
+        }
+    }
+    next();
+});
+
+const productModel = model('products', productSchema);
+module.exports = productModel;

@@ -6,6 +6,15 @@ class queryProducts {
         this.query = query
     }
 
+    // Hàm chuyển đổi chuỗi thành không dấu
+    removeDiacritics = (str) => {
+        return str.normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/đ/g, 'd')
+            .replace(/Đ/g, 'D')
+            .toLowerCase();
+    }
+
     categoryQuery = () => {
         this.products = this.query.category ? this.products.filter(c => c.category === this.query.category) : this.products
         return this
@@ -17,8 +26,21 @@ class queryProducts {
     }
 
     searchQuery = () => {
-        this.products = this.query.searchValue ? this.products.filter(p => p.name.toUpperCase().indexOf(this.query.searchValue.toUpperCase()) > -1  ) : this.products
-        return this
+        if (this.query.searchValue) {
+            const searchValue = this.removeDiacritics(this.query.searchValue);
+            this.products = this.products.filter(p => {
+                const productName = this.removeDiacritics(p.name);
+                const productCategory = this.removeDiacritics(p.category);
+                const productBrand = this.removeDiacritics(p.brand);
+                const productDescription = this.removeDiacritics(p.description);
+                
+                return productName.includes(searchValue) ||
+                       productCategory.includes(searchValue) ||
+                       productBrand.includes(searchValue) ||
+                       productDescription.includes(searchValue);
+            });
+        }
+        return this;
     }
 
     priceQuery = () => {
