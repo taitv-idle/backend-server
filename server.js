@@ -13,21 +13,21 @@ const server = http.createServer(app)
 // Cấu hình CORS cho ứng dụng
 app.use(cors({
     origin: ['http://localhost:3000', 'http://localhost:3001'],
-    credentials: true // Cho phép gửi credentials (cookie, authorization headers)
+    credentials: true
 }))
 
 // Cấu hình CORS cho socket.io
 const io = socket(server, {
     cors: {
-        origin: '*', // Cho phép tất cả các origin kết nối qua socket
+        origin: '*',
         credentials: true
     }
 })
 
 // Khai báo các biến toàn cục để lưu trữ thông tin người dùng
-var allCustomer = [] // Danh sách tất cả khách hàng đang kết nối
-var allSeller = []   // Danh sách tất cả người bán đang kết nối
-let admin = {}       // Thông tin admin đang kết nối
+var allCustomer = []
+var allSeller = []
+let admin = {}
 
 /**
  * Thêm người dùng (khách hàng) vào danh sách đang kết nối
@@ -162,12 +162,18 @@ app.use('/api', require('./routes/dashboard/sellerRoutes'))
 app.use('/api', require('./routes/home/customerAuthRoutes'))
 app.use('/api', require('./routes/chatRoutes'))
 app.use('/api', require('./routes/paymentRoutes'))
+app.use('/api/payment', require('./routes/payment/stripeRoutes'))
 app.use('/api', require('./routes/dashboard/dashboardRoutes'))
+app.use('/api/order', require('./routes/order/shippingAddressRoutes'))
+app.use('/api/order', require('./routes/order/shippingFeeRoutes'))
+
+// Stripe webhook endpoint cần raw body
+app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), require('./routes/payment/stripeRoutes'));
 
 // Route test
 app.get('/', (req, res) => res.send('Hello Server'))
 
 // Khởi động server
-const port = process.env.PORT
+const port = process.env.PORT || 5000
 dbConnect() // Kết nối database
 server.listen(port, () => console.log(`Server đang chạy trên cổng ${port}`))

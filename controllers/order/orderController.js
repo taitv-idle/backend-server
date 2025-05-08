@@ -1,15 +1,17 @@
+const mongoose = require('mongoose');
 const authOrderModel = require('../../models/authOrder')
 const customerOrder = require('../../models/customerOrder')
 const myShopWallet = require('../../models/myShopWallet')
 const sellerWallet = require('../../models/sellerWallet')
 const cardModel = require('../../models/cardModel')
+const productModel = require('../../models/productModel')
 const moment = require("moment")
 const { responseReturn } = require('../../utiles/response')
 const { mongo: {ObjectId}} = require('mongoose')
 const {config} = require("dotenv");
-require('mongoose')
+const { validatePhoneNumber } = require('../../utiles/validators');
 // Cấu hình Stripe
-const stripe = require('stripe')(process.env.stripe_sk)
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 
 // Controller xử lý các nghiệp vụ liên quan đến đơn hàng
 class orderController{
@@ -64,58 +66,117 @@ class orderController{
             session.startTransaction();
 
             const { price, products, shipping_fee, shippingInfo, userId, paymentMethod } = req.body;
+            
+            // Debug logging
+            console.log('Request body:', {
+                price,
+                products,
+                shipping_fee,
+                shippingInfo,
+                userId,
+                paymentMethod
+            });
+
             const tempDate = moment(Date.now()).format('LLL');
 
-            // Validate input
-            if (!price || !products || !shippingInfo || !userId) {
-                throw new Error('Thiếu thông tin bắt buộc');
+            // Validate input with detailed messages
+            const missingFields = [];
+            if (!price) missingFields.push('price');
+            if (!products) missingFields.push('products');
+            if (!shippingInfo) missingFields.push('shippingInfo');
+            if (!userId) missingFields.push('userId');
+            if (!paymentMethod) missingFields.push('paymentMethod');
+
+            if (missingFields.length > 0) {
+                throw new Error(`Thiếu các trường bắt buộc: ${missingFields.join(', ')}`);
+            }
+
+            // Validate shipping info
+            const requiredShippingFields = ['name', 'phone', 'address', 'province', 'city', 'area'];
+            const missingShippingFields = requiredShippingFields.filter(field => !shippingInfo[field]);
+            if (missingShippingFields.length > 0) {
+                throw new Error(`Thiếu thông tin địa chỉ giao hàng: ${missingShippingFields.join(', ')}`);
+            }
+
+            // Validate phone number
+            if (!validatePhoneNumber(shippingInfo.phone)) {
+                throw new Error('Số điện thoại không hợp lệ');
+            }
+
+            // Validate payment method
+            if (!['cod', 'stripe'].includes(paymentMethod)) {
+                throw new Error('Phương thức thanh toán không hợp lệ');
+            }
+
+            // Validate products array
+            if (!Array.isArray(products) || products.length === 0) {
+                throw new Error('Danh sách sản phẩm không hợp lệ');
             }
 
             let authorOrderData = [];
             let cardId = [];
             let customerOrderProduct = [];
 
-            // Xử lý danh sách sản phẩm
-            for (const shop of products) {
-                for (const item of shop.products) {
-                    const productInfo = { ...item.productInfo, quantity: item.quantity };
-                    customerOrderProduct.push(productInfo);
-                    if (item._id) cardId.push(item._id);
-                }
+            // Lấy thông tin seller từ sản phẩm đầu tiên
+            const firstProduct = await productModel.findById(products[0].productId);
+            if (!firstProduct) {
+                throw new Error('Không tìm thấy thông tin sản phẩm');
+            }
+
+            const sellerId = firstProduct.sellerId;
+
+            // Xử lý danh sách sản phẩm theo cấu trúc mới
+            for (const product of products) {
+                const productInfo = {
+                    productId: product.productId,
+                    quantity: product.quantity,
+                    price: product.price,
+                    discount: product.discount
+                };
+                customerOrderProduct.push(productInfo);
+                if (product._id) cardId.push(product._id);
             }
 
             // Tạo đơn hàng chính
             const order = await customerOrder.create([{
                 customerId: userId,
-                shippingInfo,
+                shippingAddress: {
+                    name: shippingInfo.name,
+                    phone: shippingInfo.phone,
+                    address: shippingInfo.address,
+                    province: shippingInfo.province,
+                    city: shippingInfo.city,
+                    area: shippingInfo.area,
+                    post: shippingInfo.post || ''
+                },
                 products: customerOrderProduct,
-                price: price + shipping_fee,
+                price: price + (shipping_fee || 0),
                 payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
                 delivery_status: 'pending',
                 payment_method: paymentMethod,
                 date: tempDate
             }], { session });
 
-            // Tạo đơn hàng cho từng seller
-            for (const shop of products) {
-                const sellerId = shop.sellerId;
-                const storePor = shop.products.map(item => ({
-                    ...item.productInfo,
-                    quantity: item.quantity
-                }));
-
-                authorOrderData.push({
-                    orderId: order[0].id,
-                    sellerId,
-                    products: storePor,
-                    price: shop.price,
-                    payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
-                    shippingInfo: 'Kho chính Easy',
-                    delivery_status: 'pending',
-                    payment_method: paymentMethod,
-                    date: tempDate
-                });
-            }
+            // Tạo đơn hàng cho seller
+            authorOrderData.push({
+                orderId: order[0].id,
+                sellerId: sellerId,
+                products: customerOrderProduct,
+                price: price,
+                payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
+                shippingAddress: {
+                    name: shippingInfo.name,
+                    phone: shippingInfo.phone,
+                    address: shippingInfo.address,
+                    province: shippingInfo.province,
+                    city: shippingInfo.city,
+                    area: shippingInfo.area,
+                    post: shippingInfo.post || ''
+                },
+                delivery_status: 'pending',
+                payment_method: paymentMethod,
+                date: tempDate
+            });
 
             await authOrderModel.insertMany(authorOrderData, { session });
 
@@ -169,7 +230,8 @@ class orderController{
     // Xác nhận thanh toán Stripe
     confirm_stripe_payment = async (req, res) => {
         try {
-            const order = await this.confirmPayment(req.params.orderId, 'stripe');
+            const { orderId } = req.params;
+            const order = await this.confirmPayment(orderId, 'stripe');
             responseReturn(res, 200, {
                 message: 'Xác nhận thanh toán Stripe thành công',
                 order
@@ -185,10 +247,10 @@ class orderController{
     // Tạo payment intent cho Stripe
     create_payment_intent = async (req, res) => {
         try {
-            const { amount, orderId } = req.body;
+            const { price, orderId } = req.body;
 
             // Validate
-            if (!amount || !orderId) {
+            if (!price || !orderId) {
                 throw new Error('Thiếu thông tin bắt buộc');
             }
 
@@ -197,9 +259,20 @@ class orderController{
                 throw new Error('Đơn hàng không tồn tại');
             }
 
+            // Convert price to smallest currency unit (cents)
+            // For VND, we multiply by 1 since 1 VND is already the smallest unit
+            const amount = Math.round(price);
+            
+            // Log the amount for debugging
+            console.log('Payment amount:', {
+                originalPrice: price,
+                convertedAmount: amount,
+                currency: 'vnd'
+            });
+
             // Tạo payment intent (sử dụng VND)
             const paymentIntent = await stripe.paymentIntents.create({
-                amount: Math.round(amount),
+                amount: amount,
                 currency: 'vnd',
                 metadata: { orderId },
                 description: `Thanh toán cho đơn hàng #${orderId}`,
@@ -218,6 +291,7 @@ class orderController{
             });
         }
     }
+
 
     // Xử lý Stripe webhook
     handle_stripe_webhook = async (req, res) => {
@@ -244,9 +318,11 @@ class orderController{
                 const paymentIntent = event.data.object;
                 const orderId = paymentIntent.metadata.orderId;
 
-                // Xác nhận thanh toán trong hệ thống
-                await this.confirmPayment(orderId, 'stripe');
-                console.log(`Xác nhận thanh toán thành công cho đơn hàng ${orderId}`);
+                if (orderId) {
+                    // Xác nhận thanh toán trong hệ thống
+                    await this.confirmPayment(orderId, 'stripe');
+                    console.log(`Xác nhận thanh toán thành công cho đơn hàng ${orderId}`);
+                }
             }
 
             responseReturn(res, 200, { received: true });

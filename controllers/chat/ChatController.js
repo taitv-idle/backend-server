@@ -110,7 +110,7 @@ class ChatController {
      * Thêm tin nhắn từ khách hàng tới người bán
      */
     customer_message_add = async (req, res) => {
-        const { userId, text, sellerId, name } = req.body
+        const { userId, text, sellerId, name, file } = req.body
 
         try {
             // Tạo tin nhắn mới
@@ -118,7 +118,8 @@ class ChatController {
                 senderId: userId,
                 senderName: name,
                 receverId: sellerId,
-                message: text
+                message: text,
+                file: file || ''
             })
 
             // Cập nhật vị trí người bán lên đầu danh sách bạn bè của khách hàng
@@ -214,17 +215,17 @@ class ChatController {
 
     /**
      * Thêm tin nhắn từ người bán tới khách hàng
-
      */
     seller_message_add = async (req, res) => {
-        const { senderId, receverId, text, name } = req.body
+        const { senderId, receverId, text, name, file } = req.body
         try {
             // Tạo tin nhắn mới
             const message = await sellerCustomerMessage.create({
                 senderId,
                 senderName: name,
                 receverId,
-                message: text
+                message: text,
+                file: file || ''
             })
 
             // Cập nhật vị trí khách hàng lên đầu danh sách bạn bè của người bán
@@ -369,6 +370,40 @@ class ChatController {
         } catch (error) {
             console.log(error)
             responseReturn(res, 500, { error: error.message })
+        }
+    }
+
+    search_sellers = async (req, res) => {
+        const { query } = req.query;
+        
+        try {
+            // Tìm kiếm theo tên shop hoặc tên người bán
+            const sellers = await sellerModel.find({
+                $or: [
+                    { 'shopInfo.shopName': { $regex: query, $options: 'i' } },
+                    { name: { $regex: query, $options: 'i' } }
+                ]
+            }).select('_id shopInfo.shopName image name');
+
+            // Kiểm tra và format dữ liệu trả về
+            const formattedSellers = sellers.map(seller => ({
+                _id: seller._id,
+                shopInfo: {
+                    shopName: seller.shopInfo?.shopName || seller.name
+                },
+                image: seller.image || '/images/default-seller.png'
+            }));
+
+            responseReturn(res, 200, {
+                success: true,
+                sellers: formattedSellers
+            });
+        } catch (error) {
+            console.log(error);
+            responseReturn(res, 500, { 
+                success: false,
+                error: error.message 
+            });
         }
     }
 }

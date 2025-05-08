@@ -9,6 +9,7 @@ router.get('/home/coustomer/get-order-details/:orderId',orderController.get_orde
 
 router.post('/order/create-payment',orderController.create_payment)
 router.get('/order/confirm/:orderId',orderController.order_confirm)
+router.get('/order-confirmation/:orderId',orderController.get_order_details)
 
 // Admin
 router.get('/admin/orders',orderController.get_admin_orders)

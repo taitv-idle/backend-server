@@ -21,9 +21,35 @@ const authSchema = new Schema({
         type: String,
         required : true  
     },
-    shippingInfo: {
-        type: String,
-        required : true  
+    shippingAddress: {
+        name: {
+            type: String,
+            required: true
+        },
+        phone: {
+            type: String,
+            required: true
+        },
+        address: {
+            type: String,
+            required: true
+        },
+        province: {
+            type: String,
+            required: true
+        },
+        city: {
+            type: String,
+            required: true
+        },
+        area: {
+            type: String,
+            required: true
+        },
+        post: {
+            type: String,
+            default: ''
+        }
     },
     delivery_status: {
         type: String,
