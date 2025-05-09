@@ -447,22 +447,71 @@ class orderController{
     get_admin_order = async (req, res) => {
         const { orderId } = req.params
         try {
-            const order = await customerOrder.aggregate([
-                {
-                    $match: { _id: new ObjectId(orderId) }
-                },
-                {
-                    $lookup: {
-                        from: 'authororders',
-                        localField: "_id",
-                        foreignField: 'orderId',
-                        as: 'suborder'
+            // First get the order with basic information
+            const order = await customerOrder.findById(orderId);
+            if (!order) {
+                return responseReturn(res, 404, { message: 'Không tìm thấy đơn hàng' });
+            }
+
+            // Get suborders
+            const suborders = await authOrderModel.find({ orderId: order._id });
+
+            // Get all product IDs from both order and suborders
+            const productIds = [
+                ...order.products.map(p => p.productId),
+                ...suborders.flatMap(so => so.products.map(p => p.productId))
+            ];
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format the order with product details
+            const formattedOrder = {
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
                     }
-                }
-            ])
-            responseReturn(res, 200, { order: order[0] })
+                })),
+                suborder: suborders.map(suborder => ({
+                    ...suborder.toObject(),
+                    products: suborder.products.map(product => ({
+                        ...product,
+                        productId: {
+                            _id: product.productId,
+                            name: productMap[product.productId.toString()]?.name,
+                            brand: productMap[product.productId.toString()]?.brand,
+                            images: productMap[product.productId.toString()]?.images,
+                            price: product.price,
+                            quantity: product.quantity,
+                            discount: product.discount
+                        }
+                    }))
+                }))
+            };
+
+            // Debug log
+            console.log('Product map:', JSON.stringify(productMap, null, 2));
+            console.log('Formatted order:', JSON.stringify(formattedOrder, null, 2));
+            console.log('First product details:', JSON.stringify(formattedOrder.products[0]?.productId, null, 2));
+
+            responseReturn(res, 200, { order: formattedOrder });
         } catch (error) {
-            console.log('Lỗi lấy chi tiết đơn hàng admin: ' + error.message)
+            console.log('Lỗi lấy chi tiết đơn hàng admin: ' + error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ khi lấy chi tiết đơn hàng' });
         }
     }
 
@@ -505,16 +554,46 @@ class orderController{
                 query.delivery_status = status;
             }
 
+            // Get orders with pagination
             const orders = await authOrderModel.find(query)
                 .skip(skipPage)
                 .limit(parPage)
                 .sort({ createdAt: -1 });
 
+            // Get all product IDs from all orders
+            const productIds = orders.flatMap(order => order.products.map(p => p.productId));
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format orders with product details
+            const formattedOrders = orders.map(order => ({
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
+                    }
+                }))
+            }));
+
             const totalOrder = await authOrderModel.countDocuments(query);
 
             responseReturn(res, 200, {
                 success: true,
-                orders,
+                orders: formattedOrders,
                 totalOrder
             });
 
@@ -531,10 +610,50 @@ class orderController{
     get_seller_order = async (req, res) => {
         const { orderId } = req.params
         try {
-            const order = await authOrderModel.findById(orderId)
-            responseReturn(res, 200, { order })
+            // Get the seller order
+            const order = await authOrderModel.findById(orderId);
+            if (!order) {
+                return responseReturn(res, 404, { message: 'Không tìm thấy đơn hàng' });
+            }
+
+            // Get all product IDs from the order
+            const productIds = order.products.map(p => p.productId);
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format the order with product details
+            const formattedOrder = {
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
+                    }
+                }))
+            };
+
+            // Debug log
+            console.log('Seller order product map:', JSON.stringify(productMap, null, 2));
+            console.log('Formatted seller order:', JSON.stringify(formattedOrder, null, 2));
+            console.log('First product details:', JSON.stringify(formattedOrder.products[0]?.productId, null, 2));
+
+            responseReturn(res, 200, { order: formattedOrder });
         } catch (error) {
-            console.log('Lỗi chi tiết đơn hàng người bán: ' + error.message)
+            console.log('Lỗi chi tiết đơn hàng người bán: ' + error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ khi lấy chi tiết đơn hàng' });
         }
     }
 
