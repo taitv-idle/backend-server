@@ -5,194 +5,235 @@ const wishlistModel = require('../../models/wishlistModel')
 
 class cardController{
    
-    add_to_card =  async(req, res) => {
+    add_to_card = async(req, res) => {
         const { userId, productId, quantity } = req.body
+
+        if (!userId || !productId || !quantity) {
+            return responseReturn(res, 400, { error: "Vui lòng điền đầy đủ thông tin" })
+        }
+
         try {
             const product = await cardModel.findOne({
-                $and: [{
-                    productId : {
-                        $eq: productId
-                    }
-                },
-                {
-                    userId: {
-                        $eq: userId
-                    }
-                }
-            ]
+                productId,
+                userId
             })
 
             if (product) {
-                responseReturn(res,404,{error: "Product Already Added To Card" })
-            } else {
-                const product = await cardModel.create({
-                    userId,
-                    productId,
-                    quantity
-                })
-                responseReturn(res,201,{message: "Added To Card Successfully" , product})
+                return responseReturn(res, 404, { error: "Sản phẩm đã có trong giỏ hàng" })
             }
-            
+
+            const newProduct = await cardModel.create({
+                userId,
+                productId,
+                quantity
+            })
+
+            return responseReturn(res, 201, {
+                message: "Thêm vào giỏ hàng thành công",
+                product: newProduct
+            })
         } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi thêm vào giỏ hàng:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
         }
     }
      
 
     get_card_products = async(req, res) => {
-       const co = 5;
-       const {userId } = req.params
-       try {
-        const card_products = await cardModel.aggregate([{
-            $match: {
-                userId: {
-                    $eq: new ObjectId(userId)
-                }
-            }
-        },
-        {
-            $lookup : {
-                from: 'products',
-                localField: 'productId',
-                foreignField: "_id",
-                as: 'products'
-            }
-        } 
-      ])
-      let buy_product_item = 0
-      let calculatePrice = 0;
-      let card_product_count = 0;
-      const outOfStockProduct = card_products.filter(p => p.products[0].stock < p.quantity)
-      for (let i = 0; i < outOfStockProduct.length; i++) {
-         card_product_count = card_product_count + outOfStockProduct[i].quantity        
-      }
-      const stockProduct = card_products.filter(p => p.products[0].stock >= p.quantity)
-      for (let i = 0; i < stockProduct.length; i++) {
-        const { quantity } = stockProduct[i]
-        card_product_count = buy_product_item + quantity
+        const COMMISSION_RATE = 5
+        const { userId } = req.params
 
-        buy_product_item = buy_product_item + quantity
-        const { price,discount } = stockProduct[i].products[0]
-        if (discount !== 0) {
-            calculatePrice = calculatePrice + quantity * (price - Math.floor((price * discount) / 100 ))
-        } else {
-            calculatePrice  = calculatePrice + quantity * price
-        }        
-      } // end for
-      let p = []
-      let unique = [...new Set(stockProduct.map(p => p.products[0].sellerId.toString()))] 
-      for (let i = 0; i < unique.length; i++) {
-        let price = 0;
-        for (let j = 0; j < stockProduct.length; j++) {
-           const tempProduct = stockProduct[j].products[0]
-           if (unique[i] === tempProduct.sellerId.toString()) {
-                let pri = 0;
-                if (tempProduct.discount !== 0) {
-                    pri = tempProduct.price - Math.floor((tempProduct.price * tempProduct.discount) / 100 )
-                } else {
-                    pri = tempProduct.price
-                }
-        pri = pri - Math.floor((pri * co) / 100)
-        price = price + pri * stockProduct[j].quantity
-        p[i] = {
-            sellerId: unique[i], 
-            shopName: tempProduct.shopName,
-            price,
-            products: p[i] ? [
-                ...p[i].products,
+        if (!userId) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp ID người dùng" })
+        }
+
+        try {
+            const card_products = await cardModel.aggregate([
                 {
-                    _id: stockProduct[j]._id,
-                    quantity: stockProduct[j].quantity,
-                    productInfo: tempProduct 
+                    $match: {
+                        userId: new ObjectId(userId)
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'products',
+                        localField: 'productId',
+                        foreignField: "_id",
+                        as: 'products'
+                    }
                 }
-            ] : [{
-                _id: stockProduct[j]._id,
-                quantity: stockProduct[j].quantity,
-                productInfo: tempProduct 
-            }]
-          } 
+            ])
 
-           } 
-        } 
-      }
+            const outOfStockProduct = card_products.filter(p => p.products[0].stock < p.quantity)
+            const stockProduct = card_products.filter(p => p.products[0].stock >= p.quantity)
 
-      responseReturn(res,200,{ 
-        card_products: p,
-        price: calculatePrice,
-        card_product_count,
-        shipping_fee: 20 * p.length,
-        outOfStockProduct,
-        buy_product_item
-      })
-            
-       } catch (error) {
-         console.log(error.message)
-       }
-       
+            let buy_product_item = 0
+            let calculatePrice = 0
+            let card_product_count = 0
+
+            // Tính số lượng sản phẩm hết hàng
+            outOfStockProduct.forEach(product => {
+                card_product_count += product.quantity
+            })
+
+            // Tính toán sản phẩm còn hàng
+            stockProduct.forEach(product => {
+                const { quantity } = product
+                const { price, discount } = product.products[0]
+                
+                buy_product_item += quantity
+                card_product_count += quantity
+
+                const productPrice = discount 
+                    ? price - Math.floor((price * discount) / 100)
+                    : price
+                
+                calculatePrice += quantity * productPrice
+            })
+
+            // Nhóm sản phẩm theo người bán
+            const sellerGroups = {}
+            const uniqueSellers = [...new Set(stockProduct.map(p => p.products[0].sellerId.toString()))]
+
+            uniqueSellers.forEach(sellerId => {
+                let sellerPrice = 0
+                const sellerProducts = stockProduct.filter(p => 
+                    p.products[0].sellerId.toString() === sellerId
+                )
+
+                sellerProducts.forEach(product => {
+                    const { price, discount, shopName } = product.products[0]
+                    let productPrice = discount 
+                        ? price - Math.floor((price * discount) / 100)
+                        : price
+                    
+                    productPrice = productPrice - Math.floor((productPrice * COMMISSION_RATE) / 100)
+                    sellerPrice += productPrice * product.quantity
+
+                    if (!sellerGroups[sellerId]) {
+                        sellerGroups[sellerId] = {
+                            sellerId,
+                            shopName,
+                            price: 0,
+                            products: []
+                        }
+                    }
+
+                    sellerGroups[sellerId].products.push({
+                        _id: product._id,
+                        quantity: product.quantity,
+                        productInfo: product.products[0]
+                    })
+                })
+
+                sellerGroups[sellerId].price = sellerPrice
+            })
+
+            return responseReturn(res, 200, {
+                card_products: Object.values(sellerGroups),
+                price: calculatePrice,
+                card_product_count,
+                shipping_fee: 20 * Object.keys(sellerGroups).length,
+                outOfStockProduct,
+                buy_product_item
+            })
+        } catch (error) {
+            console.error('Lỗi khi lấy thông tin giỏ hàng:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
+        }
     }
      
 
 
     delete_card_products = async (req, res) => {
-        const {card_id } = req.params
-        try {
-            await cardModel.findByIdAndDelete(card_id)
-            responseReturn(res,200,{message: "Product Remove Successfully" })
-            
-        } catch (error) {
-            console.log(error.message)
+        const { card_id } = req.params
+
+        if (!card_id) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp ID giỏ hàng" })
         }
-         
+
+        try {
+            const product = await cardModel.findById(card_id)
+            if (!product) {
+                return responseReturn(res, 404, { error: "Không tìm thấy sản phẩm trong giỏ hàng" })
+            }
+
+            await cardModel.findByIdAndDelete(card_id)
+            return responseReturn(res, 200, { message: "Xóa sản phẩm khỏi giỏ hàng thành công" })
+        } catch (error) {
+            console.error('Lỗi khi xóa sản phẩm:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
+        }
     }
         
 
        quantity_inc = async (req, res) => {
-        const {card_id } = req.params
+        const { card_id } = req.params
+
+        if (!card_id) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp ID giỏ hàng" })
+        }
+
         try {
             const product = await cardModel.findById(card_id)
-            const {quantity} = product
-            await cardModel.findByIdAndUpdate(card_id,{quantity: quantity + 1 })
-            responseReturn(res,200,{message: "Qty Updated" })
-            
+            if (!product) {
+                return responseReturn(res, 404, { error: "Không tìm thấy sản phẩm trong giỏ hàng" })
+            }
+
+            await cardModel.findByIdAndUpdate(card_id, { quantity: product.quantity + 1 })
+            return responseReturn(res, 200, { message: "Cập nhật số lượng thành công" })
         } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi tăng số lượng:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
         }
-         
     }
         
 
        quantity_dec = async (req, res) => {
-        const {card_id } = req.params
+        const { card_id } = req.params
+
+        if (!card_id) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp ID giỏ hàng" })
+        }
+
         try {
             const product = await cardModel.findById(card_id)
-            const {quantity} = product
-            await cardModel.findByIdAndUpdate(card_id,{quantity: quantity - 1 })
-            responseReturn(res,200,{message: "Qty Updated" })
-            
+            if (!product) {
+                return responseReturn(res, 404, { error: "Không tìm thấy sản phẩm trong giỏ hàng" })
+            }
+
+            if (product.quantity <= 1) {
+                return responseReturn(res, 400, { error: "Số lượng không thể nhỏ hơn 1" })
+            }
+
+            await cardModel.findByIdAndUpdate(card_id, { quantity: product.quantity - 1 })
+            return responseReturn(res, 200, { message: "Cập nhật số lượng thành công" })
         } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi giảm số lượng:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
         }
-         
     }
         
 
 
        add_wishlist = async (req, res) => {
         const { slug } = req.body
+
+        if (!slug) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp mã sản phẩm" })
+        }
+
         try {
-            const product = await wishlistModel.findOne({slug})
-                if (product) {
-                    responseReturn(res, 404 ,{
-                        error: 'Product Is Already In Wishlist'
-                    })
-                } else {
-                    await wishlistModel.create(req.body)
-                    responseReturn(res, 201 ,{
-                        message: 'Product Add to Wishlist Success'
-                    })
-                }
+            const product = await wishlistModel.findOne({ slug })
+            if (product) {
+                return responseReturn(res, 404, { error: "Sản phẩm đã có trong danh sách yêu thích" })
+            }
+
+            await wishlistModel.create(req.body)
+            return responseReturn(res, 201, { message: "Thêm vào danh sách yêu thích thành công" })
         } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi thêm vào danh sách yêu thích:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
         }
 
        }
@@ -201,32 +242,45 @@ class cardController{
 
        get_wishlist = async (req, res) => {
         const { userId } = req.params
+
+        if (!userId) {
+            return responseReturn(res, 400, { error: "Vui lòng cung cấp ID người dùng" })
+        }
+
         try {
-            const wishlists = await wishlistModel.find({
-                userId
-            })
-            responseReturn(res, 200, {
+            const wishlists = await wishlistModel.find({ userId })
+            return responseReturn(res, 200, {
                 wishlistCount: wishlists.length,
                 wishlists
             })
-            
         } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi lấy danh sách yêu thích:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
         }
        } 
          
 
         remove_wishlist = async (req, res) => {
-           const {wishlistId} = req.params
+           const { wishlistId } = req.params
+
+           if (!wishlistId) {
+               return responseReturn(res, 400, { error: "Vui lòng cung cấp ID danh sách yêu thích" })
+           }
+
            try {
             const wishlist = await wishlistModel.findByIdAndDelete(wishlistId) 
-            responseReturn(res, 200,{
-                message: 'Wishlist Product Remove',
+            if (!wishlist) {
+                return responseReturn(res, 404, { error: "Không tìm thấy sản phẩm trong danh sách yêu thích" })
+            }
+
+            return responseReturn(res, 200, {
+                message: "Xóa sản phẩm khỏi danh sách yêu thích thành công",
                 wishlistId
             })
             
            } catch (error) {
-            console.log(error.message)
+            console.error('Lỗi khi xóa khỏi danh sách yêu thích:', error.message)
+            return responseReturn(res, 500, { error: "Lỗi máy chủ" })
            }
         }
   

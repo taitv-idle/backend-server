@@ -22,14 +22,16 @@ class ProductController {
                 return responseReturn(res, 400, { error: 'Lỗi khi xử lý biểu mẫu' });
             }
 
-            const { name, category, description, stock, price, discount, shopName, brand } = field;
+            const { name, category, description, stock, price, discount, shopName, brand, size, color } = field;
             const { images } = files;
 
-            if (!name || !category || !price || !stock || !images) {
-                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: tên, danh mục, giá, số lượng, hình ảnh' });
+            if (!name || !category || !price || !stock || !images || !size || !color) {
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: tên, danh mục, giá, số lượng, hình ảnh, kích thước, màu sắc' });
             }
 
             const trimmedName = name.trim();
+            // Xử lý description từ ReactQuill - giữ nguyên HTML content
+            const processedDescription = description ? description.toString() : '';
 
             try {
                 // Tạo slug hợp lệ
@@ -43,18 +45,24 @@ class ProductController {
                     allImageUrl.push(result.url);
                 }
 
+                // Xử lý size và color thành mảng
+                const sizeArray = Array.isArray(size) ? size : [size];
+                const colorArray = Array.isArray(color) ? color : [color];
+
                 const product = await productModel.create({
                     sellerId: id,
                     name: trimmedName,
                     slug,
                     shopName: shopName?.trim(),
                     category: category.trim(),
-                    description: description?.trim(),
+                    description: processedDescription,
                     stock: parseInt(stock),
                     price: parseInt(price),
                     discount: parseInt(discount) || 0,
                     images: allImageUrl,
-                    brand: brand?.trim()
+                    brand: brand?.trim(),
+                    size: sizeArray,
+                    color: colorArray
                 });
 
                 responseReturn(res, 201, { product, message: 'Thêm sản phẩm thành công' });
@@ -143,28 +151,36 @@ class ProductController {
     };
 
     product_update = async (req, res) => {
-        const { name, description, stock, price, category, discount, brand, productId } = req.body;
-        if (!productId || !name || !category || !price || !stock) {
-            return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: productId, tên, danh mục, giá, số lượng' });
+        const { name, description, stock, price, category, discount, brand, productId, size, color } = req.body;
+        if (!productId || !name || !category || !price || !stock || !size || !color) {
+            return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: productId, tên, danh mục, giá, số lượng, kích thước, màu sắc' });
         }
 
         const trimmedName = name.trim();
+        // Xử lý description từ ReactQuill - giữ nguyên HTML content
+        const processedDescription = description ? description.toString() : '';
 
         try {
             // Tạo slug hợp lệ
             const slug = await createSlug(trimmedName, productModel, productId);
+
+            // Xử lý size và color thành mảng
+            const sizeArray = Array.isArray(size) ? size : [size];
+            const colorArray = Array.isArray(color) ? color : [color];
 
             const product = await productModel.findByIdAndUpdate(
                 productId,
                 {
                     name: trimmedName,
                     slug,
-                    description: description?.trim(),
+                    description: processedDescription,
                     stock: parseInt(stock),
                     price: parseInt(price),
                     category: category.trim(),
                     discount: parseInt(discount) || 0,
-                    brand: brand?.trim()
+                    brand: brand?.trim(),
+                    size: sizeArray,
+                    color: colorArray
                 },
                 { new: true }
             );

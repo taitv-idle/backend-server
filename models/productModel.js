@@ -52,6 +52,14 @@ const productSchema = new Schema({
         type: Array,
         required : true
     },
+    size: {
+        type: [String],
+        required: true
+    },
+    color: {
+        type: [String],
+        required: true
+    },
     rating: {
         type: Number,
         default : 0
