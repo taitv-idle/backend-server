@@ -65,13 +65,12 @@ class orderController{
         try {
             session.startTransaction();
 
-            const { price, products, shipping_fee, shippingInfo, userId, paymentMethod } = req.body;
+            const { price, products, shippingInfo, userId, paymentMethod } = req.body;
             
             // Debug logging
             console.log('Request body:', {
                 price,
                 products,
-                shipping_fee,
                 shippingInfo,
                 userId,
                 paymentMethod
@@ -113,6 +112,10 @@ class orderController{
                 throw new Error('Danh sách sản phẩm không hợp lệ');
             }
 
+            // Tính phí vận chuyển
+            const shipping_fee = price >= 500000 ? 0 : 40000;
+            const totalPrice = price + shipping_fee;
+
             let authorOrderData = [];
             let cardId = [];
             let customerOrderProduct = [];
@@ -150,7 +153,8 @@ class orderController{
                     post: shippingInfo.post || ''
                 },
                 products: customerOrderProduct,
-                price: price + (shipping_fee || 0),
+                price: totalPrice,
+                shipping_fee: shipping_fee,
                 payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
                 delivery_status: 'pending',
                 payment_method: paymentMethod,
@@ -163,6 +167,7 @@ class orderController{
                 sellerId: sellerId,
                 products: customerOrderProduct,
                 price: price,
+                shipping_fee: shipping_fee,
                 payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
                 shippingAddress: {
                     name: shippingInfo.name,
@@ -198,7 +203,9 @@ class orderController{
             responseReturn(res, 200, {
                 message: "Đặt hàng thành công",
                 orderId: order[0].id,
-                paymentMethod
+                paymentMethod,
+                shipping_fee,
+                totalPrice
             });
 
         } catch (error) {
@@ -341,65 +348,160 @@ class orderController{
         try {
             const recentOrders = await customerOrder.find({
                 customerId: new ObjectId(userId)
-            }).limit(5)
+            }).limit(5);
+
+            // Get all product IDs from recent orders
+            const productIds = recentOrders.flatMap(order => order.products.map(p => p.productId));
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format orders with product details
+            const formattedRecentOrders = recentOrders.map(order => ({
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
+                    }
+                }))
+            }));
 
             const pendingOrder = await customerOrder.find({
                 customerId: new ObjectId(userId),
                 delivery_status: 'pending'
-            }).countDocuments()
+            }).countDocuments();
 
             const totalOrder = await customerOrder.find({
                 customerId: new ObjectId(userId)
-            }).countDocuments()
+            }).countDocuments();
 
             const cancelledOrder = await customerOrder.find({
                 customerId: new ObjectId(userId),
                 delivery_status: 'cancelled'
-            }).countDocuments()
+            }).countDocuments();
 
             responseReturn(res, 200, {
-                recentOrders,
+                recentOrders: formattedRecentOrders,
                 pendingOrder,
                 totalOrder,
                 cancelledOrder
-            })
+            });
 
         } catch (error) {
-            console.log(error.message)
+            console.log('Lỗi lấy dữ liệu dashboard khách hàng:', error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ khi lấy dữ liệu dashboard' });
         }
     }
 
     // Lấy danh sách đơn hàng của khách hàng
     get_orders = async (req, res) => {
-        const { customerId, status } = req.params
+        const { customerId, status } = req.params;
 
         try {
-            let orders = []
+            let query = { customerId: new ObjectId(customerId) };
             if (status !== 'all') {
-                orders = await customerOrder.find({
-                    customerId: new ObjectId(customerId),
-                    delivery_status: status
-                })
-            } else {
-                orders = await customerOrder.find({
-                    customerId: new ObjectId(customerId)
-                })
+                query.delivery_status = status;
             }
-            responseReturn(res, 200, { orders })
+
+            const orders = await customerOrder.find(query);
+
+            // Get all product IDs from all orders
+            const productIds = orders.flatMap(order => order.products.map(p => p.productId));
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format orders with product details
+            const formattedOrders = orders.map(order => ({
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
+                    }
+                }))
+            }));
+
+            responseReturn(res, 200, { orders: formattedOrders });
 
         } catch (error) {
-            console.log(error.message)
+            console.log('Lỗi lấy danh sách đơn hàng khách hàng:', error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ khi lấy danh sách đơn hàng' });
         }
     }
 
     // Chi tiết đơn hàng của khách hàng
     get_order_details = async (req, res) => {
-        const { orderId } = req.params
+        const { orderId } = req.params;
         try {
-            const order = await customerOrder.findById(orderId)
-            responseReturn(res, 200, { order })
+            const order = await customerOrder.findById(orderId);
+            if (!order) {
+                return responseReturn(res, 404, { message: 'Không tìm thấy đơn hàng' });
+            }
+
+            // Get all product IDs from the order
+            const productIds = order.products.map(p => p.productId);
+
+            // Get all products in one query
+            const products = await productModel.find({ _id: { $in: productIds } });
+
+            // Create a map of products for easy lookup
+            const productMap = products.reduce((map, product) => {
+                map[product._id.toString()] = product;
+                return map;
+            }, {});
+
+            // Format the order with product details
+            const formattedOrder = {
+                ...order.toObject(),
+                products: order.products.map(product => ({
+                    ...product,
+                    productId: {
+                        _id: product.productId,
+                        name: productMap[product.productId.toString()]?.name,
+                        brand: productMap[product.productId.toString()]?.brand,
+                        images: productMap[product.productId.toString()]?.images,
+                        price: product.price,
+                        quantity: product.quantity,
+                        discount: product.discount
+                    }
+                }))
+            };
+
+            // Debug log
+            console.log('Customer order product map:', JSON.stringify(productMap, null, 2));
+            console.log('Formatted customer order:', JSON.stringify(formattedOrder, null, 2));
+            console.log('First product details:', JSON.stringify(formattedOrder.products[0]?.productId, null, 2));
+
+            responseReturn(res, 200, { order: formattedOrder });
         } catch (error) {
-            console.log(error.message)
+            console.log('Lỗi lấy chi tiết đơn hàng khách hàng:', error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ khi lấy chi tiết đơn hàng' });
         }
     }
 
@@ -660,16 +762,37 @@ class orderController{
     // Người bán: cập nhật trạng thái đơn hàng
     seller_order_status_update = async (req, res) => {
         const { orderId } = req.params
-        const { status } = req.body
+        const { status, payment_status } = req.body
 
         try {
-            await authOrderModel.findByIdAndUpdate(orderId, {
-                delivery_status: status
-            })
-            responseReturn(res, 200, { message: 'Cập nhật trạng thái đơn hàng thành công' })
+            const updateData = {};
+            
+            // Cập nhật trạng thái giao hàng nếu có
+            if (status) {
+                updateData.delivery_status = status;
+            }
+            
+            // Cập nhật trạng thái thanh toán nếu có
+            if (payment_status) {
+                updateData.payment_status = payment_status;
+            }
+
+            // Cập nhật đơn hàng của seller
+            await authOrderModel.findByIdAndUpdate(orderId, updateData);
+
+            // Cập nhật đơn hàng chính nếu cần
+            const sellerOrder = await authOrderModel.findById(orderId);
+            if (sellerOrder) {
+                await customerOrder.findByIdAndUpdate(sellerOrder.orderId, updateData);
+            }
+
+            responseReturn(res, 200, { 
+                message: 'Cập nhật trạng thái đơn hàng thành công',
+                updatedData: updateData
+            });
         } catch (error) {
-            console.log('Lỗi cập nhật trạng thái người bán: ' + error.message)
-            responseReturn(res, 500, { message: 'Lỗi máy chủ' })
+            console.log('Lỗi cập nhật trạng thái người bán: ' + error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ' });
         }
     }
 
