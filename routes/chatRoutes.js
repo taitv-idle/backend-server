@@ -1,6 +1,6 @@
 const ChatController = require('../controllers/chat/ChatController')
 const { authMiddleware } = require('../middlewares/authMiddleware')
-const { responseReturn } = require('../utiles/response')
+const { responseReturn } = require('../utils/response')
 const router = require('express').Router()
 const multer = require('multer')
 const path = require('path')

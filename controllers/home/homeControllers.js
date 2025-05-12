@@ -1,11 +1,12 @@
 const categoryModel = require('../../models/categoryModel')
 const productModel = require('../../models/productModel')
 const reviewModel = require('../../models/reviewModel')
-const { responseReturn } = require("../../utiles/response")
-const queryProducts = require('../../utiles/queryProducts')
+const { responseReturn } = require("../../utils/response")
+const queryProducts = require('../../utils/queryProducts')
 const moment = require('moment')
 const { mongo: {ObjectId}} = require('mongoose')
-const {createSlug} = require('../../utiles/createSlug')
+const {createSlug} = require('../../utils/createSlug')
+const customerModel = require('../../models/customerModel')
 
 class homeControllers{
 

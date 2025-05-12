@@ -6,10 +6,10 @@ const sellerWallet = require('../../models/sellerWallet')
 const cardModel = require('../../models/cardModel')
 const productModel = require('../../models/productModel')
 const moment = require("moment")
-const { responseReturn } = require('../../utiles/response')
+const { responseReturn } = require('../../utils/response')
 const { mongo: {ObjectId}} = require('mongoose')
 const {config} = require("dotenv");
-const { validatePhoneNumber } = require('../../utiles/validators');
+const { validatePhoneNumber } = require('../../utils/validators');
 // Cấu hình Stripe
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 

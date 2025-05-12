@@ -1,7 +1,8 @@
 const { v4: uuidv4 } = require('uuid');
 const aiChatModel = require('../../models/chat/aiChatModel');
-const { responseReturn } = require('../../utiles/response');
+const { responseReturn } = require('../../utils/response');
 const openai = require('../../config/openai');
+const { getFallbackResponse } = require('../../config/openai');
 
 class AIChatController {
     // Khởi tạo phiên chat mới hoặc trả về phiên chat hiện có
@@ -64,6 +65,30 @@ class AIChatController {
                 content: message
             });
             
+            // Kiểm tra API key
+            if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('your-openai-api-key')) {
+                console.error('OpenAI API key không hợp lệ hoặc chưa được cấu hình');
+                
+                // Lưu tin nhắn của người dùng vào cơ sở dữ liệu
+                await chat.save();
+                
+                // Trả về phản hồi giả lập
+                const mockResponse = 'Xin lỗi, hiện tại tôi không thể kết nối với trí tuệ nhân tạo. Vui lòng thử lại sau hoặc liên hệ bộ phận hỗ trợ.';
+                
+                chat.messages.push({
+                    role: 'assistant',
+                    content: mockResponse
+                });
+                
+                await chat.save();
+                
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: mockResponse,
+                    note: 'Sử dụng phản hồi giả lập do API key không hợp lệ'
+                });
+            }
+            
             // Chuẩn bị tin nhắn cho OpenAI API
             const messages = [
                 {
@@ -76,35 +101,52 @@ class AIChatController {
                 }))
             ];
             
-            // Gọi OpenAI API để lấy phản hồi
-            const completion = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: messages,
-                max_tokens: 500
-            });
-            
-            // Lấy phản hồi từ AI
-            const aiResponse = completion.choices[0].message.content;
-            
-            // Thêm phản hồi vào phiên chat
-            chat.messages.push({
-                role: 'assistant',
-                content: aiResponse
-            });
-            
-            // Cập nhật thời gian cập nhật cuối cùng
-            chat.lastUpdated = Date.now();
-            
-            // Lưu phiên chat
-            await chat.save();
-            
-            return responseReturn(res, 200, {
-                success: true,
-                message: aiResponse
-            });
+            try {
+                // Gọi OpenAI API để lấy phản hồi
+                const completion = await openai.chat.completions.create({
+                    model: 'gpt-3.5-turbo',
+                    messages: messages,
+                    max_tokens: 500
+                });
+                
+                // Lấy phản hồi từ AI
+                const aiResponse = completion.choices[0].message.content;
+                
+                // Thêm phản hồi vào phiên chat
+                chat.messages.push({
+                    role: 'assistant',
+                    content: aiResponse
+                });
+                
+                // Cập nhật thời gian cập nhật cuối cùng
+                chat.lastUpdated = Date.now();
+                
+                // Lưu phiên chat
+                await chat.save();
+                
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: aiResponse
+                });
+            } catch (openaiError) {
+                console.error('Lỗi OpenAI API:', openaiError.message, openaiError);
+                
+                // Lưu tin nhắn của người dùng vào cơ sở dữ liệu mà không có phản hồi từ AI
+                await chat.save();
+                
+                // Trả về phản hồi giả lập trong trường hợp lỗi
+                const errorResponse = getFallbackResponse();
+                
+                return responseReturn(res, 200, { 
+                    success: true,
+                    message: errorResponse,
+                    isQuotaExceeded: openaiError.message.includes('quota'),
+                    isFallback: true
+                });
+            }
         } catch (error) {
-            console.error('Lỗi gửi tin nhắn:', error.message);
-            return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+            console.error('Lỗi gửi tin nhắn:', error.message, error.stack);
+            return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ', details: error.message });
         }
     }
     
@@ -137,8 +179,8 @@ class AIChatController {
         }
     }
     
-    // Kết thúc phiên chat
-    endChat = async (req, res) => {
+    // Xóa phiên chat
+    deleteChat = async (req, res) => {
         try {
             const { id } = req.user;
             const { sessionId } = req.params;
@@ -163,10 +205,10 @@ class AIChatController {
             
             return responseReturn(res, 200, {
                 success: true,
-                message: 'Đã kết thúc phiên chat'
+                message: 'Đã xóa phiên chat thành công'
             });
         } catch (error) {
-            console.error('Lỗi kết thúc chat:', error.message);
+            console.error('Lỗi xóa chat:', error.message);
             return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
         }
     }

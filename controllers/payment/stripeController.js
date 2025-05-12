@@ -1,5 +1,5 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { responseReturn } = require('../../utiles/response');
+const { responseReturn } = require('../../utils/response');
 const customerOrder = require('../../models/customerOrder');
 const authOrderModel = require('../../models/authOrder');
 const myShopWallet = require('../../models/myShopWallet');

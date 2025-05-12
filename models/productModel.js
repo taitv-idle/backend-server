@@ -1,5 +1,5 @@
 const {Schema, model} = require("mongoose");
-const {createSlug} = require('../utiles/createSlug');
+const {createSlug} = require('../utils/createSlug');
 
 const productSchema = new Schema({
     sellerId: {

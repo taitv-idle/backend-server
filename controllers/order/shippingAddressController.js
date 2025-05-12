@@ -1,5 +1,5 @@
 const ShippingAddress = require('../../models/ShippingAddress');
-const { validatePhoneNumber } = require('../../utiles/validators');
+const { validatePhoneNumber } = require('../../utils/validators');
 
 // Lấy danh sách địa chỉ đã lưu của user
 exports.getSavedAddresses = async (req, res) => {

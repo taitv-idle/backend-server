@@ -3,7 +3,7 @@ const app = express()
 const cors = require('cors')
 const bodyParser = require('body-parser')
 const cookieParser = require('cookie-parser')
-const { dbConnect } = require('./utiles/db')
+const { dbConnect } = require('./utils/db')
 
 // Thiết lập socket.io
 const socket = require('socket.io')

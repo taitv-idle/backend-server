@@ -1,5 +1,5 @@
 const { validationResult } = require('express-validator');
-const { responseReturn } = require('../utiles/response');
+const { responseReturn } = require('../utils/response');
 
 module.exports = {
     // Xử lý kết quả validate

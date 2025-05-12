@@ -1,8 +1,8 @@
 const customerModel = require('../../models/customerModel')
-const { responseReturn } = require('../../utiles/response')
+const { responseReturn } = require('../../utils/response')
 const bcrypt = require('bcrypt')
 const sellerCustomerModel = require('../../models/chat/sellerCustomerModel')
-const {createToken} = require('../../utiles/tokenCreate')
+const {createToken} = require('../../utils/tokenCreate')
 const cloudinary = require('../../config/cloudinary')
 const fs = require('fs')
 

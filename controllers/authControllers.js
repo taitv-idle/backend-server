@@ -1,9 +1,9 @@
 const adminModel = require('../models/adminModel');
 const sellerModel = require('../models/sellerModel');
 const sellerCustomerModel = require('../models/chat/sellerCustomerModel');
-const { responseReturn } = require('../utiles/response');
+const { responseReturn } = require('../utils/response');
 const bcrpty = require('bcrypt');
-const { createToken } = require('../utiles/tokenCreate');
+const { createToken } = require('../utils/tokenCreate');
 const cloudinary = require('cloudinary').v2;
 const formidable = require('formidable');
 

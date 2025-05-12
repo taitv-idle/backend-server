@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
-const { responseReturn } = require('../../utiles/response');
+const { responseReturn } = require('../../utils/response');
 const openai = require('../../config/openai');
+const { getFallbackResponse } = require('../../config/openai');
 
 // Bộ nhớ tạm thời cho các phiên chat ẩn danh (trong môi trường sản xuất, nên sử dụng Redis hoặc DB)
 const anonymousSessions = new Map();
@@ -67,6 +68,30 @@ class PublicAIChatController {
                 timestamp: new Date()
             });
             
+            // Kiểm tra API key
+            if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('your-openai-api-key')) {
+                console.error('OpenAI API key không hợp lệ hoặc chưa được cấu hình');
+                
+                // Trả về phản hồi giả lập
+                const mockResponse = 'Xin lỗi, hiện tại tôi không thể kết nối với trí tuệ nhân tạo. Vui lòng thử lại sau hoặc liên hệ bộ phận hỗ trợ.';
+                
+                chat.messages.push({
+                    role: 'assistant',
+                    content: mockResponse,
+                    timestamp: new Date()
+                });
+                
+                // Cập nhật phiên chat trong bộ nhớ
+                chat.lastUpdated = new Date();
+                anonymousSessions.set(sessionId, chat);
+                
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: mockResponse,
+                    note: 'Sử dụng phản hồi giả lập do API key không hợp lệ'
+                });
+            }
+            
             // Chuẩn bị tin nhắn cho OpenAI API
             const messages = [
                 {
@@ -79,35 +104,113 @@ class PublicAIChatController {
                 }))
             ];
             
-            // Gọi OpenAI API để lấy phản hồi
-            const completion = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: messages,
-                max_tokens: 500
-            });
+            try {
+                // Gọi OpenAI API để lấy phản hồi
+                const completion = await openai.chat.completions.create({
+                    model: 'gpt-3.5-turbo',
+                    messages: messages,
+                    max_tokens: 500
+                });
+                
+                // Lấy phản hồi từ AI
+                const aiResponse = completion.choices[0].message.content;
+                
+                // Thêm phản hồi vào phiên chat
+                chat.messages.push({
+                    role: 'assistant',
+                    content: aiResponse,
+                    timestamp: new Date()
+                });
+                
+                // Cập nhật thời gian cập nhật cuối cùng
+                chat.lastUpdated = new Date();
+                
+                // Lưu phiên chat vào bộ nhớ
+                anonymousSessions.set(sessionId, chat);
+                
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: aiResponse
+                });
+            } catch (openaiError) {
+                console.error('Lỗi OpenAI API:', openaiError.message, openaiError);
+                
+                // Trả về phản hồi giả lập trong trường hợp lỗi
+                const errorResponse = getFallbackResponse();
+                
+                // Thêm phản hồi vào phiên chat
+                chat.messages.push({
+                    role: 'assistant',
+                    content: errorResponse,
+                    timestamp: new Date()
+                });
+                
+                // Cập nhật thời gian cập nhật cuối cùng
+                chat.lastUpdated = new Date();
+                anonymousSessions.set(sessionId, chat);
+                
+                return responseReturn(res, 200, { 
+                    success: true,
+                    message: errorResponse,
+                    isQuotaExceeded: openaiError.message.includes('quota'),
+                    isFallback: true
+                });
+            }
+        } catch (error) {
+            console.error('Lỗi gửi tin nhắn công khai:', error.message, error.stack);
+            return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ', details: error.message });
+        }
+    }
+    
+    // Lấy lịch sử chat
+    getChatHistory = async (req, res) => {
+        try {
+            const { sessionId } = req.params;
             
-            // Lấy phản hồi từ AI
-            const aiResponse = completion.choices[0].message.content;
+            if (!sessionId) {
+                return responseReturn(res, 400, { error: 'Thiếu ID phiên' });
+            }
             
-            // Thêm phản hồi vào phiên chat
-            chat.messages.push({
-                role: 'assistant',
-                content: aiResponse,
-                timestamp: new Date()
-            });
+            // Kiểm tra xem phiên chat có tồn tại không
+            if (!anonymousSessions.has(sessionId)) {
+                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat hoặc phiên đã hết hạn' });
+            }
             
-            // Cập nhật thời gian cập nhật cuối cùng
-            chat.lastUpdated = new Date();
-            
-            // Lưu phiên chat vào bộ nhớ
-            anonymousSessions.set(sessionId, chat);
+            const chat = anonymousSessions.get(sessionId);
             
             return responseReturn(res, 200, {
                 success: true,
-                message: aiResponse
+                chat
             });
         } catch (error) {
-            console.error('Lỗi gửi tin nhắn công khai:', error.message);
+            console.error('Lỗi lấy lịch sử chat công khai:', error.message);
+            return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    }
+    
+    // Xóa phiên chat
+    deleteChat = async (req, res) => {
+        try {
+            const { sessionId } = req.params;
+            
+            if (!sessionId) {
+                return responseReturn(res, 400, { error: 'Thiếu ID phiên' });
+            }
+            
+            // Kiểm tra xem phiên chat có tồn tại không
+            if (!anonymousSessions.has(sessionId)) {
+                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat' });
+            }
+            
+            // Xóa phiên chat
+            anonymousSessions.delete(sessionId);
+            
+            return responseReturn(res, 200, {
+                success: true,
+                message: 'Đã xóa phiên chat thành công'
+            });
+        } catch (error) {
+            console.error('Lỗi xóa phiên chat công khai:', error.message);
             return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
         }
     }

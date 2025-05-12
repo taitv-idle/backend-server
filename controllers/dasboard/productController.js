@@ -1,8 +1,8 @@
 const formidable = require("formidable");
-const { responseReturn } = require("../../utiles/response");
+const { responseReturn } = require("../../utils/response");
 const cloudinary = require('cloudinary').v2;
 const productModel = require('../../models/productModel');
-const { createSlug } = require('../../utiles/createSlug');
+const { createSlug } = require('../../utils/createSlug');
 
 // Cấu hình Cloudinary một lần
 cloudinary.config({
