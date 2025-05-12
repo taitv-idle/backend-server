@@ -40,7 +40,8 @@ class customerAuthController {
                 id: createCustomer.id,
                 name: createCustomer.name,
                 email: createCustomer.email,
-                method: createCustomer.method 
+                method: createCustomer.method,
+                image: null
             })
 
             // Set cookie
@@ -56,7 +57,8 @@ class customerAuthController {
                 userInfo: {
                     id: createCustomer.id,
                     name: createCustomer.name,
-                    email: createCustomer.email
+                    email: createCustomer.email,
+                    image: null
                 }
             })
 
@@ -92,7 +94,8 @@ class customerAuthController {
                 id: customer.id,
                 name: customer.name,
                 email: customer.email,
-                method: customer.method 
+                method: customer.method,
+                image: customer.image?.url || null
             })
 
             // Set cookie
@@ -108,7 +111,8 @@ class customerAuthController {
                 userInfo: {
                     id: customer.id,
                     name: customer.name,
-                    email: customer.email
+                    email: customer.email,
+                    image: customer.image?.url || null
                 }
             })
 
@@ -156,24 +160,41 @@ class customerAuthController {
 
             // Process image if uploaded
             if (req.file) {
-                // Upload to cloudinary
-                const { public_id, secure_url } = await cloudinary.uploader.upload(req.file.path, {
-                    folder: 'ecommerce/customers'
-                });
-                
-                // Add image to update data
-                updateData.image = {
-                    public_id,
-                    url: secure_url
-                };
-                
-                // Delete local file after upload
-                fs.unlinkSync(req.file.path);
-                
-                // Delete old image if exists
-                const customer = await customerModel.findById(id);
-                if (customer?.image?.public_id) {
-                    await cloudinary.uploader.destroy(customer.image.public_id);
+                try {
+                    // Upload to cloudinary
+                    const { public_id, secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                        folder: 'ecommerce/customers'
+                    });
+                    
+                    // Add image to update data
+                    updateData.image = {
+                        public_id,
+                        url: secure_url
+                    };
+                    
+                    // Delete local file after upload
+                    fs.unlinkSync(req.file.path);
+                    
+                    // Delete old image if exists
+                    const customer = await customerModel.findById(id);
+                    if (customer?.image?.public_id) {
+                        await cloudinary.uploader.destroy(customer.image.public_id);
+                    }
+                } catch (cloudinaryError) {
+                    console.error('Lỗi tải ảnh lên Cloudinary:', cloudinaryError);
+                    
+                    // Clean up local file if it exists
+                    if (req.file && req.file.path) {
+                        try {
+                            fs.unlinkSync(req.file.path);
+                        } catch (unlinkError) {
+                            console.error('Không thể xóa file tạm:', unlinkError);
+                        }
+                    }
+                    
+                    return responseReturn(res, 500, { 
+                        error: 'Lỗi khi tải ảnh lên, vui lòng thử lại sau'
+                    });
                 }
             }
             
@@ -193,7 +214,8 @@ class customerAuthController {
                 id: updatedUser.id,
                 name: updatedUser.name,
                 email: updatedUser.email,
-                method: updatedUser.method
+                method: updatedUser.method,
+                image: updatedUser.image?.url || null
             });
             
             // Set updated cookie
@@ -206,7 +228,8 @@ class customerAuthController {
             return responseReturn(res, 200, {
                 success: true,
                 message: 'Cập nhật thông tin thành công',
-                user: {
+                token,
+                userInfo: {
                     id: updatedUser.id,
                     name: updatedUser.name,
                     email: updatedUser.email,
@@ -216,6 +239,30 @@ class customerAuthController {
             
         } catch (error) {
             console.error('Lỗi cập nhật thông tin:', error.message);
+            return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    }
+
+    get_current_customer = async(req, res) => {
+        try {
+            const { id } = req.user;
+            
+            // Find customer by ID
+            const customer = await customerModel.findById(id);
+            if (!customer) {
+                return responseReturn(res, 404, { error: 'Không tìm thấy thông tin người dùng' });
+            }
+            
+            return responseReturn(res, 200, {
+                userInfo: {
+                    id: customer.id,
+                    name: customer.name,
+                    email: customer.email,
+                    image: customer.image?.url || null
+                }
+            });
+        } catch (error) {
+            console.error('Lỗi lấy thông tin người dùng:', error.message);
             return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
         }
     }

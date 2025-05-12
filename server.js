@@ -166,6 +166,7 @@ app.use('/api/payment', require('./routes/payment/stripeRoutes'))
 app.use('/api', require('./routes/dashboard/dashboardRoutes'))
 app.use('/api/order', require('./routes/order/shippingAddressRoutes'))
 app.use('/api/order', require('./routes/order/shippingFeeRoutes'))
+app.use('/api', require('./routes/aiChatRoutes'))
 
 // Stripe webhook endpoint cần raw body
 app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), require('./routes/payment/stripeRoutes'));

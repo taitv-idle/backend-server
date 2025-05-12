@@ -17,7 +17,11 @@ const customerSchema = new Schema({
     method: {
         type: String,
         required : true
-    }, 
+    },
+    image: {
+        public_id: String,
+        url: String
+    }
 },{ timestamps: true })
 
 module.exports = model('customers',customerSchema)
