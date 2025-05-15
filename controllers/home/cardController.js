@@ -48,6 +48,12 @@ class cardController{
         }
 
         try {
+            // Kiểm tra tính hợp lệ của ObjectId
+            if (!ObjectId.isValid(userId)) {
+                return responseReturn(res, 400, { error: "ID người dùng không hợp lệ" })
+            }
+
+            // Tối ưu hóa truy vấn aggregate
             const card_products = await cardModel.aggregate([
                 {
                     $match: {
@@ -61,79 +67,95 @@ class cardController{
                         foreignField: "_id",
                         as: 'products'
                     }
+                },
+                // Unwind để làm phẳng mảng kết quả
+                { $unwind: "$products" },
+                // Thêm trường để phân loại sản phẩm hết hàng
+                {
+                    $addFields: {
+                        isOutOfStock: { $lt: ["$products.stock", "$quantity"] },
+                        productPrice: {
+                            $cond: {
+                                if: { $gt: ["$products.discount", 0] },
+                                then: {
+                                    $subtract: [
+                                        "$products.price",
+                                        { $floor: { $multiply: ["$products.price", { $divide: ["$products.discount", 100] }] } }
+                                    ]
+                                },
+                                else: "$products.price"
+                            }
+                        }
+                    }
+                },
+                // Nhóm theo sellerId
+                {
+                    $group: {
+                        _id: "$products.sellerId",
+                        shopName: { $first: "$products.shopName" },
+                        products: {
+                            $push: {
+                                _id: "$$ROOT._id",
+                                quantity: "$$ROOT.quantity",
+                                productInfo: "$$ROOT.products",
+                                isOutOfStock: "$$ROOT.isOutOfStock",
+                                productPrice: "$$ROOT.productPrice"
+                            }
+                        },
+                        totalProducts: { $sum: 1 },
+                        buy_product_item: { $sum: { $cond: [{ $eq: ["$isOutOfStock", false] }, "$quantity", 0] } },
+                        card_product_count: { $sum: "$quantity" },
+                        totalPrice: {
+                            $sum: {
+                                $multiply: [
+                                    { $cond: [{ $eq: ["$isOutOfStock", false] }, "$productPrice", 0] },
+                                    "$quantity"
+                                ]
+                            }
+                        }
+                    }
+                },
+                // Định dạng lại kết quả
+                {
+                    $project: {
+                        _id: 0,
+                        sellerId: "$_id",
+                        shopName: 1,
+                        products: 1,
+                        price: {
+                            $subtract: [
+                                "$totalPrice",
+                                { $floor: { $multiply: ["$totalPrice", { $divide: [COMMISSION_RATE, 100] }] } }
+                            ]
+                        }
+                    }
                 }
             ])
 
-            const outOfStockProduct = card_products.filter(p => p.products[0].stock < p.quantity)
-            const stockProduct = card_products.filter(p => p.products[0].stock >= p.quantity)
-
+            // Tách các sản phẩm hết hàng
+            const outOfStockProduct = []
             let buy_product_item = 0
-            let calculatePrice = 0
             let card_product_count = 0
+            let calculatePrice = 0
 
-            // Tính số lượng sản phẩm hết hàng
-            outOfStockProduct.forEach(product => {
-                card_product_count += product.quantity
-            })
-
-            // Tính toán sản phẩm còn hàng
-            stockProduct.forEach(product => {
-                const { quantity } = product
-                const { price, discount } = product.products[0]
-                
-                buy_product_item += quantity
-                card_product_count += quantity
-
-                const productPrice = discount 
-                    ? price - Math.floor((price * discount) / 100)
-                    : price
-                
-                calculatePrice += quantity * productPrice
-            })
-
-            // Nhóm sản phẩm theo người bán
-            const sellerGroups = {}
-            const uniqueSellers = [...new Set(stockProduct.map(p => p.products[0].sellerId.toString()))]
-
-            uniqueSellers.forEach(sellerId => {
-                let sellerPrice = 0
-                const sellerProducts = stockProduct.filter(p => 
-                    p.products[0].sellerId.toString() === sellerId
-                )
-
-                sellerProducts.forEach(product => {
-                    const { price, discount, shopName } = product.products[0]
-                    let productPrice = discount 
-                        ? price - Math.floor((price * discount) / 100)
-                        : price
-                    
-                    productPrice = productPrice - Math.floor((productPrice * COMMISSION_RATE) / 100)
-                    sellerPrice += productPrice * product.quantity
-
-                    if (!sellerGroups[sellerId]) {
-                        sellerGroups[sellerId] = {
-                            sellerId,
-                            shopName,
-                            price: 0,
-                            products: []
-                        }
+            // Tính toán tổng thể
+            card_products.forEach(seller => {
+                seller.products.forEach(product => {
+                    if (product.isOutOfStock) {
+                        outOfStockProduct.push(product)
+                    } else {
+                        buy_product_item += product.quantity
+                        calculatePrice += product.productPrice * product.quantity
                     }
-
-                    sellerGroups[sellerId].products.push({
-                        _id: product._id,
-                        quantity: product.quantity,
-                        productInfo: product.products[0]
-                    })
+                    card_product_count += product.quantity
                 })
-
-                sellerGroups[sellerId].price = sellerPrice
             })
 
             return responseReturn(res, 200, {
-                card_products: Object.values(sellerGroups),
+                card_products,
                 price: calculatePrice,
                 card_product_count,
-                shipping_fee: 20 * Object.keys(sellerGroups).length,
+                shipping_fee: 20 * card_products.length,
                 outOfStockProduct,
                 buy_product_item
             })
@@ -268,6 +290,11 @@ class cardController{
            }
 
            try {
+            // Kiểm tra tính hợp lệ của ObjectId
+            if (!ObjectId.isValid(wishlistId)) {
+                return responseReturn(res, 400, { error: "ID danh sách yêu thích không hợp lệ" })
+            }
+
             const wishlist = await wishlistModel.findByIdAndDelete(wishlistId) 
             if (!wishlist) {
                 return responseReturn(res, 404, { error: "Không tìm thấy sản phẩm trong danh sách yêu thích" })

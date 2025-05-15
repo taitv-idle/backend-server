@@ -258,30 +258,44 @@ class orderController{
 
             // Validate
             if (!price || !orderId) {
-                throw new Error('Thiếu thông tin bắt buộc');
+                return responseReturn(res, 400, {
+                    message: 'Thiếu thông tin bắt buộc: giá hoặc mã đơn hàng',
+                    success: false
+                });
             }
 
             const order = await customerOrder.findById(orderId);
             if (!order) {
-                throw new Error('Đơn hàng không tồn tại');
+                return responseReturn(res, 404, {
+                    message: 'Đơn hàng không tồn tại',
+                    success: false
+                });
             }
 
-            // Convert price to smallest currency unit (cents)
-            // For VND, we multiply by 1 since 1 VND is already the smallest unit
+            if (order.payment_status === 'paid') {
+                return responseReturn(res, 400, {
+                    message: 'Đơn hàng đã được thanh toán',
+                    success: false
+                });
+            }
+
+            // Kiểm tra giá tiền
             const amount = Math.round(price);
             
-            // Log the amount for debugging
-            console.log('Payment amount:', {
-                originalPrice: price,
-                convertedAmount: amount,
-                currency: 'vnd'
+            console.log('Creating payment intent:', {
+                amount,
+                orderId,
+                customerId: order.customerId.toString()
             });
 
             // Tạo payment intent (sử dụng VND)
             const paymentIntent = await stripe.paymentIntents.create({
                 amount: amount,
                 currency: 'vnd',
-                metadata: { orderId },
+                metadata: { 
+                    orderId,
+                    customerId: order.customerId.toString()
+                },
                 description: `Thanh toán cho đơn hàng #${orderId}`,
                 payment_method_types: ['card'],
                 capture_method: 'automatic'
@@ -289,12 +303,14 @@ class orderController{
 
             responseReturn(res, 200, {
                 clientSecret: paymentIntent.client_secret,
-                paymentIntentId: paymentIntent.id
+                paymentIntentId: paymentIntent.id,
+                success: true
             });
         } catch (error) {
             console.error('Create payment intent error:', error);
             responseReturn(res, 500, {
-                message: error.message || 'Lỗi khi tạo payment intent'
+                message: error.message || 'Lỗi khi tạo payment intent',
+                success: false
             });
         }
     }
@@ -796,6 +812,62 @@ class orderController{
         }
     }
 
+    // Xác nhận đơn hàng sau khi thanh toán (từ trang redirect)
+    order_payment_success = async (req, res) => {
+        try {
+            const { payment_intent_client_secret } = req.query;
+            
+            if (!payment_intent_client_secret) {
+                return responseReturn(res, 400, { 
+                    message: 'Thiếu thông tin client secret',
+                    success: false
+                });
+            }
+            
+            // Lấy payment intent từ client secret
+            const clientSecret = payment_intent_client_secret;
+            const paymentIntentId = clientSecret.split('_secret_')[0];
+            
+            console.log('Retrieving payment intent:', paymentIntentId);
+            
+            // Kiểm tra trạng thái thanh toán
+            const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+            
+            if (paymentIntent.status !== 'succeeded') {
+                return responseReturn(res, 400, {
+                    message: 'Thanh toán chưa hoàn tất',
+                    success: false,
+                    paymentStatus: paymentIntent.status
+                });
+            }
+            
+            // Lấy orderId từ metadata
+            const orderId = paymentIntent.metadata.orderId;
+            if (!orderId) {
+                return responseReturn(res, 400, {
+                    message: 'Không tìm thấy thông tin đơn hàng',
+                    success: false
+                });
+            }
+            
+            // Xác nhận thanh toán
+            await this.confirmPayment(orderId, 'stripe');
+            
+            responseReturn(res, 200, {
+                message: 'Thanh toán thành công',
+                success: true,
+                orderId
+            });
+            
+        } catch (error) {
+            console.error('Order payment success error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi xử lý xác nhận thanh toán',
+                success: false
+            });
+        }
+    }
+
     // Tạo thanh toán Stripe
     create_payment = async (req, res) => {
         const { price } = req.body
@@ -909,6 +981,77 @@ class orderController{
             await session.abortTransaction();
             console.error(`Confirm ${paymentMethod} payment error:`, error);
             throw error;
+        } finally {
+            session.endSession();
+        }
+    }
+
+    // Xác nhận thanh toán từ client (thay thế webhook)
+    confirm_client_payment = async (req, res) => {
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+
+            const { orderId } = req.params;
+            const { paymentIntentId } = req.body;
+
+            if (!orderId || !paymentIntentId) {
+                return responseReturn(res, 400, {
+                    message: 'Thiếu thông tin bắt buộc: orderId hoặc paymentIntentId',
+                    success: false
+                });
+            }
+
+            // Kiểm tra đơn hàng
+            const order = await customerOrder.findById(orderId).session(session);
+            if (!order) {
+                return responseReturn(res, 404, {
+                    message: 'Đơn hàng không tồn tại',
+                    success: false
+                });
+            }
+
+            // Kiểm tra trạng thái thanh toán
+            if (order.payment_status === 'paid') {
+                return responseReturn(res, 200, {
+                    message: 'Đơn hàng đã được thanh toán trước đó',
+                    success: true,
+                    order
+                });
+            }
+
+            // Xác minh thanh toán với Stripe
+            const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+            console.log('Payment intent status:', paymentIntent.status);
+            
+            if (paymentIntent.status !== 'succeeded') {
+                return responseReturn(res, 400, {
+                    message: 'Thanh toán chưa được xác nhận',
+                    success: false,
+                    paymentStatus: paymentIntent.status
+                });
+            }
+
+            // Xác nhận thanh toán trong hệ thống
+            await this.confirmPayment(orderId, 'stripe');
+            
+            const updatedOrder = await customerOrder.findById(orderId);
+            
+            await session.commitTransaction();
+
+            responseReturn(res, 200, {
+                message: 'Xác nhận thanh toán thành công',
+                success: true,
+                order: updatedOrder
+            });
+
+        } catch (error) {
+            await session.abortTransaction();
+            console.error('Confirm client payment error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi xác nhận thanh toán',
+                success: false
+            });
         } finally {
             session.endSession();
         }

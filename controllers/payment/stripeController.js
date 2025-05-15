@@ -5,7 +5,8 @@ const authOrderModel = require('../../models/authOrder');
 const myShopWallet = require('../../models/myShopWallet');
 const sellerWallet = require('../../models/sellerWallet');
 const moment = require('moment');
-const { mongo: { ObjectId } } = require('mongoose');
+const mongoose = require('mongoose');
+const { mongo: { ObjectId } } = mongoose;
 
 class StripeController {
     // Tạo payment intent
@@ -15,23 +16,38 @@ class StripeController {
 
             // Validate input
             if (!price || !orderId) {
-                throw new Error('Thiếu thông tin bắt buộc');
+                return responseReturn(res, 400, {
+                    message: 'Thiếu thông tin bắt buộc: giá hoặc mã đơn hàng'
+                });
             }
 
             // Kiểm tra đơn hàng
             const order = await customerOrder.findById(orderId);
             if (!order) {
-                throw new Error('Đơn hàng không tồn tại');
+                return responseReturn(res, 404, {
+                    message: 'Đơn hàng không tồn tại'
+                });
             }
 
             // Kiểm tra trạng thái thanh toán
             if (order.payment_status === 'paid') {
-                throw new Error('Đơn hàng đã được thanh toán');
+                return responseReturn(res, 400, {
+                    message: 'Đơn hàng đã được thanh toán'
+                });
             }
 
             // Tạo payment intent (sử dụng VND)
+            // VND là smallest unit - không cần nhân với 100 như USD
+            const amount = Math.round(price);
+            
+            console.log('Creating payment intent:', {
+                amount,
+                orderId,
+                customerId: order.customerId.toString()
+            });
+
             const paymentIntent = await stripe.paymentIntents.create({
-                amount: Math.round(price * 1000), // Chuyển sang VND
+                amount: amount,
                 currency: 'vnd',
                 metadata: { 
                     orderId,
@@ -65,24 +81,34 @@ class StripeController {
 
             // Validate input
             if (!orderId || !paymentIntentId) {
-                throw new Error('Thiếu thông tin bắt buộc');
+                return responseReturn(res, 400, {
+                    message: 'Thiếu thông tin bắt buộc: orderId hoặc paymentIntentId'
+                });
             }
 
             // Kiểm tra đơn hàng
             const order = await customerOrder.findById(orderId).session(session);
             if (!order) {
-                throw new Error('Đơn hàng không tồn tại');
+                return responseReturn(res, 404, {
+                    message: 'Đơn hàng không tồn tại'
+                });
             }
 
             // Kiểm tra trạng thái thanh toán
             if (order.payment_status === 'paid') {
-                throw new Error('Đơn hàng đã được thanh toán');
+                return responseReturn(res, 400, {
+                    message: 'Đơn hàng đã được thanh toán'
+                });
             }
 
             // Xác minh payment intent
             const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+            console.log('Payment intent status:', paymentIntent.status);
+            
             if (paymentIntent.status !== 'succeeded') {
-                throw new Error('Thanh toán chưa được xác nhận');
+                return responseReturn(res, 400, {
+                    message: 'Thanh toán chưa được xác nhận'
+                });
             }
 
             // Cập nhật trạng thái đơn hàng
@@ -148,10 +174,18 @@ class StripeController {
         const sig = req.headers['stripe-signature'];
         const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+        if (!endpointSecret) {
+            console.error('Stripe webhook secret is not configured');
+            return responseReturn(res, 500, {
+                message: 'Webhook secret không được cấu hình'
+            });
+        }
+
         let event;
         try {
+            // Kiểm tra chữ ký webhook
             event = stripe.webhooks.constructEvent(
-                req.body,
+                req.rawBody, // Đảm bảo middleware đã lưu raw body
                 sig,
                 endpointSecret
             );
@@ -167,18 +201,40 @@ class StripeController {
             if (event.type === 'payment_intent.succeeded') {
                 const paymentIntent = event.data.object;
                 const orderId = paymentIntent.metadata.orderId;
+                const paymentIntentId = paymentIntent.id;
 
-                if (orderId) {
-                    // Xác nhận thanh toán trong hệ thống
-                    await this.confirm_payment({ params: { orderId }, body: { paymentIntentId: paymentIntent.id } }, res);
-                    console.log(`Xác nhận thanh toán thành công cho đơn hàng ${orderId}`);
+                if (!orderId) {
+                    console.error('Missing orderId in payment intent metadata');
+                    return responseReturn(res, 400, {
+                        message: 'Thiếu orderId trong metadata'
+                    });
                 }
+
+                console.log(`Đã nhận webhook thanh toán thành công cho đơn hàng ${orderId}`);
+
+                // Tạo request và response giả để gọi hàm confirm_payment
+                const mockReq = {
+                    params: { orderId },
+                    body: { paymentIntentId }
+                };
+                
+                const mockRes = {
+                    status: (code) => ({
+                        json: (data) => {
+                            console.log(`Kết quả xác nhận thanh toán: ${code}`, data);
+                        }
+                    })
+                };
+
+                // Gọi hàm xác nhận thanh toán
+                await this.confirm_payment(mockReq, mockRes);
             }
 
-            responseReturn(res, 200, { received: true });
+            // Phản hồi cho Stripe biết rằng đã nhận webhook
+            return responseReturn(res, 200, { received: true });
         } catch (error) {
             console.error('Webhook processing error:', error);
-            responseReturn(res, 500, {
+            return responseReturn(res, 500, {
                 message: error.message || 'Lỗi khi xử lý webhook'
             });
         }

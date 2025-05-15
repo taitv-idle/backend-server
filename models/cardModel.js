@@ -15,4 +15,9 @@ const cardSchema = new Schema({
     } 
 },{ timestamps: true })
 
+// Thêm index để cải thiện hiệu suất truy vấn
+cardSchema.index({ userId: 1 });
+cardSchema.index({ productId: 1 });
+cardSchema.index({ userId: 1, productId: 1 }, { unique: true });
+
 module.exports = model('cardProducts',cardSchema)

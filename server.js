@@ -148,7 +148,9 @@ io.on('connection', (soc) => {
 // Cấu hình các middleware và routes
 require('dotenv').config() // Load biến môi trường
 
-app.use(bodyParser.json()) // Middleware phân tích request body dạng JSON
+// Middleware xử lý JSON request
+app.use(bodyParser.json());
+
 app.use(cookieParser())    // Middleware phân tích cookie
 
 // Đăng ký các routes
@@ -167,9 +169,6 @@ app.use('/api', require('./routes/dashboard/dashboardRoutes'))
 app.use('/api/order', require('./routes/order/shippingAddressRoutes'))
 app.use('/api/order', require('./routes/order/shippingFeeRoutes'))
 app.use('/api', require('./routes/aiChatRoutes'))
-
-// Stripe webhook endpoint cần raw body
-app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), require('./routes/payment/stripeRoutes'));
 
 // Route test
 app.get('/', (req, res) => res.send('Hello Server'))
