@@ -88,6 +88,48 @@ class FreeChatController {
         }
     };
     
+    // Phương thức tạo lại phiên chat
+    recreateSession = async () => {
+        try {
+            // Tạo sessionId mới
+            const sessionId = uuidv4();
+            
+            // Tạo phiên chat mới với tin nhắn chào đầu tiên
+            const newChat = {
+                sessionId,
+                messages: [{
+                    role: 'assistant',
+                    content: 'Xin chào! Tôi là trợ lý thời trang ảo của cửa hàng. Tôi có thể giúp gì cho bạn?',
+                    timestamp: new Date()
+                }],
+                createdAt: new Date(),
+                lastUpdated: new Date()
+            };
+            
+            // Lưu phiên chat vào bộ nhớ tạm thời
+            chatSessions.set(sessionId, newChat);
+            
+            // Thiết lập thời gian hết hạn (24 giờ)
+            setTimeout(() => {
+                if (chatSessions.has(sessionId)) {
+                    chatSessions.delete(sessionId);
+                }
+            }, 1000 * 60 * 60 * 24);
+            
+            return {
+                success: true,
+                chat: newChat,
+                sessionId
+            };
+        } catch (error) {
+            console.error('Lỗi tạo lại phiên chat:', error.message);
+            return {
+                success: false,
+                error: 'Lỗi tạo lại phiên chat'
+            };
+        }
+    };
+
     // Gửi tin nhắn và nhận phản hồi
     sendMessage = async (req, res) => {
         try {
@@ -99,7 +141,43 @@ class FreeChatController {
             
             // Kiểm tra phiên chat
             if (!chatSessions.has(sessionId)) {
-                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat hoặc phiên đã hết hạn' });
+                // Tự động tạo lại phiên chat
+                const newSession = await this.recreateSession();
+                
+                if (!newSession.success) {
+                    return responseReturn(res, 500, { error: 'Không thể tạo lại phiên chat' });
+                }
+                
+                // Thêm tin nhắn người dùng vào phiên mới
+                const chat = newSession.chat;
+                chat.messages.push({
+                    role: 'user',
+                    content: message,
+                    timestamp: new Date()
+                });
+                
+                // Lấy phản hồi từ AI dựa trên context
+                const aiResponse = freeAI.getContextAwareResponse(chat.messages, message);
+                
+                // Thêm phản hồi AI vào phiên chat
+                chat.messages.push({
+                    role: 'assistant',
+                    content: aiResponse,
+                    timestamp: new Date()
+                });
+                
+                // Cập nhật thời gian
+                chat.lastUpdated = new Date();
+                
+                // Lưu lại phiên chat
+                chatSessions.set(newSession.sessionId, chat);
+                
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: aiResponse,
+                    sessionId: newSession.sessionId,
+                    isNewSession: true
+                });
             }
             
             const chat = chatSessions.get(sessionId);
@@ -111,7 +189,7 @@ class FreeChatController {
                 timestamp: new Date()
             });
             
-            // Lấy phản hồi từ AI dựa trên context (sử dụng freeAI utility)
+            // Lấy phản hồi từ AI dựa trên context
             const aiResponse = freeAI.getContextAwareResponse(chat.messages, message);
             
             // Thêm phản hồi AI vào phiên chat

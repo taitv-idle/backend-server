@@ -38,6 +38,33 @@ class AIChatController {
         }
     }
     
+    // Phương thức tạo lại phiên chat
+    recreateSession = async (userId) => {
+        try {
+            // Tạo phiên chat mới
+            const newChat = await aiChatModel.create({
+                customerId: userId,
+                sessionId: uuidv4(),
+                messages: [{
+                    role: 'assistant',
+                    content: 'Xin chào! Tôi là trợ lý ảo của cửa hàng thời trang. Tôi có thể giúp gì cho bạn?'
+                }]
+            });
+            
+            return {
+                success: true,
+                chat: newChat,
+                sessionId: newChat.sessionId
+            };
+        } catch (error) {
+            console.error('Lỗi tạo lại phiên chat:', error.message);
+            return {
+                success: false,
+                error: 'Lỗi tạo lại phiên chat'
+            };
+        }
+    };
+
     // Gửi tin nhắn và nhận phản hồi từ chatbot
     sendMessage = async (req, res) => {
         try {
@@ -49,14 +76,21 @@ class AIChatController {
             }
             
             // Tìm phiên chat
-            const chat = await aiChatModel.findOne({
+            let chat = await aiChatModel.findOne({
                 customerId: id,
                 sessionId,
                 isActive: true
             });
             
             if (!chat) {
-                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat' });
+                // Tự động tạo lại phiên chat
+                const newSession = await this.recreateSession(id);
+                
+                if (!newSession.success) {
+                    return responseReturn(res, 500, { error: 'Không thể tạo lại phiên chat' });
+                }
+                
+                chat = newSession.chat;
             }
             
             // Thêm tin nhắn của người dùng vào phiên chat
@@ -85,7 +119,9 @@ class AIChatController {
                 return responseReturn(res, 200, {
                     success: true,
                     message: mockResponse,
-                    note: 'Sử dụng phản hồi giả lập do API key không hợp lệ'
+                    note: 'Sử dụng phản hồi giả lập do API key không hợp lệ',
+                    sessionId: chat.sessionId,
+                    isNewSession: !chat._id.equals(chat._id)
                 });
             }
             
@@ -126,7 +162,9 @@ class AIChatController {
                 
                 return responseReturn(res, 200, {
                     success: true,
-                    message: aiResponse
+                    message: aiResponse,
+                    sessionId: chat.sessionId,
+                    isNewSession: !chat._id.equals(chat._id)
                 });
             } catch (openaiError) {
                 console.error('Lỗi OpenAI API:', openaiError.message, openaiError);
@@ -141,7 +179,9 @@ class AIChatController {
                     success: true,
                     message: errorResponse,
                     isQuotaExceeded: openaiError.message.includes('quota'),
-                    isFallback: true
+                    isFallback: true,
+                    sessionId: chat.sessionId,
+                    isNewSession: !chat._id.equals(chat._id)
                 });
             }
         } catch (error) {

@@ -65,6 +65,57 @@ class GeminiChatController {
         }
     };
     
+    // Phương thức tạo lại phiên chat
+    recreateSession = async (res) => {
+        try {
+            // Tạo ID phiên mới
+            const sessionId = uuidv4();
+            
+            // Tạo phiên chat mới với cấu trúc phù hợp với Gemini
+            const newChat = {
+                sessionId,
+                messages: [
+                    {
+                        role: 'user',
+                        content: 'Chào bạn, tôi muốn tư vấn về thời trang',
+                        timestamp: new Date()
+                    },
+                    {
+                        role: 'assistant',
+                        content: WELCOME_MESSAGE,
+                        timestamp: new Date(),
+                        model: 'gemini-assistant'
+                    }
+                ],
+                systemInstructions: SYSTEM_INSTRUCTIONS,
+                createdAt: new Date(),
+                lastUpdated: new Date()
+            };
+            
+            // Lưu phiên vào bộ nhớ
+            chatSessions.set(sessionId, newChat);
+            
+            // Đặt thời gian hết hạn sau 24 giờ
+            setTimeout(() => {
+                if (chatSessions.has(sessionId)) {
+                    chatSessions.delete(sessionId);
+                }
+            }, 1000 * 60 * 60 * 24);
+            
+            return {
+                success: true,
+                chat: newChat,
+                sessionId
+            };
+        } catch (error) {
+            console.error('Lỗi tạo lại phiên chat:', error.message);
+            return {
+                success: false,
+                error: 'Lỗi tạo lại phiên chat'
+            };
+        }
+    };
+    
     // Gửi tin nhắn đến chatbot và nhận phản hồi
     sendMessage = async (req, res) => {
         try {
@@ -77,7 +128,78 @@ class GeminiChatController {
             
             // Kiểm tra xem phiên có tồn tại không
             if (!chatSessions.has(sessionId)) {
-                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat hoặc phiên đã hết hạn' });
+                // Tự động tạo lại phiên chat
+                const newSession = await this.recreateSession(res);
+                
+                if (!newSession.success) {
+                    return responseReturn(res, 500, { error: 'Không thể tạo lại phiên chat' });
+                }
+                
+                // Thêm tin nhắn người dùng vào phiên mới
+                const chat = newSession.chat;
+                chat.messages.push({
+                    role: 'user',
+                    content: message,
+                    timestamp: new Date()
+                });
+                
+                try {
+                    // Chuẩn bị lịch sử hội thoại cho Gemini
+                    const chatHistory = [...chat.messages];
+                    
+                    // Thêm hướng dẫn hệ thống vào nội dung tin nhắn đầu tiên của user
+                    if (chatHistory.length > 0 && chatHistory[0].role === 'user') {
+                        chatHistory[0].content = `${chatHistory[0].content} [Hướng dẫn hệ thống cho bot: ${chat.systemInstructions}]`;
+                    }
+                    
+                    // Lấy phản hồi từ Gemini AI
+                    const aiResponse = await geminiAI.getContextAwareResponse(chatHistory, message);
+                    
+                    // Thêm phản hồi AI vào lịch sử chat
+                    chat.messages.push({
+                        role: 'assistant',
+                        content: aiResponse,
+                        timestamp: new Date(),
+                        model: 'gemini-assistant'
+                    });
+                    
+                    // Cập nhật phiên
+                    chat.lastUpdated = new Date();
+                    chatSessions.set(newSession.sessionId, chat);
+                    
+                    return responseReturn(res, 200, {
+                        success: true,
+                        message: aiResponse,
+                        model: 'gemini-assistant',
+                        sessionId: newSession.sessionId,
+                        isNewSession: true
+                    });
+                } catch (apiError) {
+                    console.error('Lỗi xử lý tin nhắn:', apiError.message);
+                    
+                    // Phản hồi dự phòng
+                    const fallbackResponse = 'Xin lỗi, hiện tại tôi không thể xử lý yêu cầu của bạn. Vui lòng thử lại sau.';
+                    
+                    // Thêm phản hồi dự phòng vào lịch sử chat
+                    chat.messages.push({
+                        role: 'assistant',
+                        content: fallbackResponse,
+                        timestamp: new Date(),
+                        model: 'fallback'
+                    });
+                    
+                    // Cập nhật phiên
+                    chat.lastUpdated = new Date();
+                    chatSessions.set(newSession.sessionId, chat);
+                    
+                    return responseReturn(res, 200, {
+                        success: true,
+                        message: fallbackResponse,
+                        isFallback: true,
+                        sessionId: newSession.sessionId,
+                        isNewSession: true
+                    });
+                }
             }
             
             const chat = chatSessions.get(sessionId);
@@ -183,6 +305,7 @@ class GeminiChatController {
                 return responseReturn(res, 400, { error: 'Thiếu ID phiên' });
             }
             
+            // Kiểm tra xem phiên có tồn tại không
             if (chatSessions.has(sessionId)) {
                 chatSessions.delete(sessionId);
                 
@@ -191,7 +314,11 @@ class GeminiChatController {
                     message: 'Đã xóa phiên chat thành công'
                 });
             } else {
-                return responseReturn(res, 404, { error: 'Không tìm thấy phiên chat' });
+                // Thay vì trả về lỗi 404, trả về thành công vì mục đích cuối cùng là xóa phiên
+                return responseReturn(res, 200, {
+                    success: true,
+                    message: 'Phiên chat đã được xóa hoặc không tồn tại'
+                });
             }
         } catch (error) {
             console.error('Lỗi xóa phiên chat:', error.message);
