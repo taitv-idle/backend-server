@@ -922,7 +922,7 @@ class orderController{
             console.log(error.message)
         }
     }
-    // Hàm hỗ trợ: Xác nhận thanh toán chung
+    // Hàm hỗ trợ: Xác nhận thanh toán
     async confirmPayment(orderId, paymentMethod) {
         const session = await mongoose.startSession();
         try {
@@ -931,6 +931,10 @@ class orderController{
             const order = await customerOrder.findById(orderId).session(session);
             if (!order) {
                 throw new Error('Đơn hàng không tồn tại');
+            }
+
+            if (order.payment_status === 'paid') {
+                throw new Error('Đơn hàng đã được thanh toán');
             }
 
             // Cập nhật trạng thái đơn hàng
@@ -950,36 +954,35 @@ class orderController{
                 { session }
             );
 
-            // Cập nhật ví nếu là thanh toán online
-            if (paymentMethod === 'stripe') {
-                const auOrder = await authOrderModel.find({
-                    orderId: new ObjectId(orderId)
-                }).session(session);
+            // Cập nhật ví
+            const auOrder = await authOrderModel.find({
+                orderId: new ObjectId(orderId)
+            }).session(session);
 
-                const time = moment(Date.now()).format('l');
-                const splitTime = time.split('/');
+            const time = moment(Date.now()).format('l');
+            const splitTime = time.split('/');
 
-                await myShopWallet.create([{
-                    amount: order.price,
+            await myShopWallet.create([{
+                amount: order.price,
+                month: splitTime[0],
+                year: splitTime[2]
+            }], { session });
+
+            for (const sellerOrder of auOrder) {
+                await sellerWallet.create([{
+                    sellerId: sellerOrder.sellerId.toString(),
+                    amount: sellerOrder.price,
                     month: splitTime[0],
                     year: splitTime[2]
                 }], { session });
-
-                for (const sellerOrder of auOrder) {
-                    await sellerWallet.create([{
-                        sellerId: sellerOrder.sellerId.toString(),
-                        amount: sellerOrder.price,
-                        month: splitTime[0],
-                        year: splitTime[2]
-                    }], { session });
-                }
             }
 
             await session.commitTransaction();
             return order;
+
         } catch (error) {
             await session.abortTransaction();
-            console.error(`Confirm ${paymentMethod} payment error:`, error);
+            console.error('Confirm payment error:', error);
             throw error;
         } finally {
             session.endSession();
