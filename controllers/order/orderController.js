@@ -26,21 +26,24 @@ class orderController{
         try {
             session.startTransaction();
 
+            const orderStatuses = this.getOrderStatuses();
+            const paymentStatuses = this.getPaymentStatuses();
+
             const order = await customerOrder.findById(id).session(session);
             if (!order) {
                 throw new Error('Đơn hàng không tồn tại');
             }
 
-            if (order.payment_status === 'unpaid') {
+            if (order.payment_status === paymentStatuses.unpaid.id) {
                 await customerOrder.findByIdAndUpdate(id, {
-                    delivery_status: 'cancelled',
+                    delivery_status: orderStatuses.cancelled.id,
                     cancellation_reason: 'Không thanh toán trong thời gian quy định'
                 }, { session });
 
                 await authOrderModel.updateMany({
                     orderId: id
                 }, {
-                    delivery_status: 'cancelled',
+                    delivery_status: orderStatuses.cancelled.id,
                     cancellation_reason: 'Không thanh toán trong thời gian quy định'
                 }, { session });
 
@@ -124,6 +127,10 @@ class orderController{
                 }
             }
 
+            // Lấy các trạng thái
+            const orderStatuses = this.getOrderStatuses();
+            const paymentStatuses = this.getPaymentStatuses();
+
             // Tính phí vận chuyển
             const shipping_fee = price >= 500000 ? 0 : 40000;
             const totalPrice = price + shipping_fee;
@@ -167,8 +174,8 @@ class orderController{
                 products: customerOrderProduct,
                 price: totalPrice,
                 shipping_fee: shipping_fee,
-                payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
-                delivery_status: 'pending',
+                payment_status: paymentMethod === 'cod' ? paymentStatuses.pending.id : paymentStatuses.unpaid.id,
+                delivery_status: orderStatuses.pending.id,
                 payment_method: paymentMethod,
                 date: tempDate
             }], { session });
@@ -180,7 +187,7 @@ class orderController{
                 products: customerOrderProduct,
                 price: price,
                 shipping_fee: shipping_fee,
-                payment_status: paymentMethod === 'cod' ? 'pending' : 'unpaid',
+                payment_status: paymentMethod === 'cod' ? paymentStatuses.pending.id : paymentStatuses.unpaid.id,
                 shippingAddress: {
                     name: shippingInfo.name,
                     phone: shippingInfo.phone,
@@ -190,7 +197,7 @@ class orderController{
                     area: shippingInfo.area,
                     post: shippingInfo.post || ''
                 },
-                delivery_status: 'pending',
+                delivery_status: orderStatuses.pending.id,
                 payment_method: paymentMethod,
                 date: tempDate
             });
@@ -206,7 +213,7 @@ class orderController{
 
             // Nếu là COD, xác nhận ngay
             if (paymentMethod === 'cod') {
-                await this.confirmPayment(order[0].id, 'cod');
+                await this.processCodOrder(order[0].id);
             } else {
                 // Stripe - đặt hẹn kiểm tra thanh toán sau 15 phút
                 setTimeout(() => this.paymentCheck(order[0].id), 900000); // 15 phút
@@ -654,6 +661,14 @@ class orderController{
         try {
             session.startTransaction();
 
+            const orderStatuses = this.getOrderStatuses();
+            const paymentStatuses = this.getPaymentStatuses();
+
+            // Kiểm tra trạng thái hợp lệ
+            if (!orderStatuses[status]) {
+                throw new Error('Trạng thái đơn hàng không hợp lệ');
+            }
+
             // Lấy thông tin đơn hàng trước khi cập nhật
             const order = await customerOrder.findById(orderId).session(session);
             if (!order) {
@@ -666,7 +681,7 @@ class orderController{
             }, { session });
 
             // Nếu đơn hàng bị hủy và đã thanh toán, hoàn lại số lượng sản phẩm trong kho
-            if (status === 'cancelled' && order.payment_status === 'paid') {
+            if (status === orderStatuses.cancelled.id && order.payment_status === paymentStatuses.paid.id) {
                 for (const product of order.products) {
                     await productModel.findByIdAndUpdate(
                         product.productId,
@@ -685,8 +700,39 @@ class orderController{
                 await this.sendOrderCancellationNotification(order.customerId, orderId);
             }
 
+            // Nếu đơn hàng đã hoàn thành, cập nhật trạng thái đơn hàng
+            if (status === orderStatuses.completed.id) {
+                // Có thể thêm logic phát sinh khi đơn hàng hoàn thành ở đây
+                console.log(`Đơn hàng ${orderId} đã hoàn thành`);
+            }
+
+            // Nếu đơn hàng đã hoàn trả, cập nhật lại số lượng sản phẩm
+            if (status === orderStatuses.returned.id && order.payment_status === paymentStatuses.paid.id) {
+                for (const product of order.products) {
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: product.quantity,
+                                sold: -product.quantity 
+                            } 
+                        },
+                        { session }
+                    );
+                    console.log(`Sản phẩm ${product.productId} đã hoàn trả: tăng ${product.quantity} đơn vị stock, giảm ${product.quantity} đơn vị sold`);
+                }
+                
+                // Cập nhật trạng thái thanh toán thành hoàn tiền
+                await customerOrder.findByIdAndUpdate(orderId, {
+                    payment_status: paymentStatuses.refunded.id
+                }, { session });
+            }
+
             await session.commitTransaction();
-            responseReturn(res, 200, { message: 'Cập nhật trạng thái đơn hàng thành công' });
+            responseReturn(res, 200, { 
+                message: 'Cập nhật trạng thái đơn hàng thành công',
+                status: orderStatuses[status].name
+            });
         } catch (error) {
             await session.abortTransaction();
             console.log('Lỗi cập nhật trạng thái đơn hàng: ' + error.message);
@@ -831,15 +877,24 @@ class orderController{
         try {
             session.startTransaction();
 
+            const orderStatuses = this.getOrderStatuses();
+            const paymentStatuses = this.getPaymentStatuses();
+
             const updateData = {};
             
-            // Cập nhật trạng thái giao hàng nếu có
+            // Kiểm tra và cập nhật trạng thái giao hàng nếu có
             if (status) {
+                if (!orderStatuses[status]) {
+                    throw new Error('Trạng thái đơn hàng không hợp lệ');
+                }
                 updateData.delivery_status = status;
             }
             
-            // Cập nhật trạng thái thanh toán nếu có
+            // Kiểm tra và cập nhật trạng thái thanh toán nếu có
             if (payment_status) {
+                if (!paymentStatuses[payment_status]) {
+                    throw new Error('Trạng thái thanh toán không hợp lệ');
+                }
                 updateData.payment_status = payment_status;
             }
 
@@ -858,7 +913,7 @@ class orderController{
             }
 
             // Nếu đơn hàng bị hủy và đã thanh toán, hoàn lại số lượng sản phẩm trong kho
-            if (status === 'cancelled' && sellerOrder.payment_status === 'paid') {
+            if (status === orderStatuses.cancelled.id && sellerOrder.payment_status === paymentStatuses.paid.id) {
                 for (const product of sellerOrder.products) {
                     await productModel.findByIdAndUpdate(
                         product.productId,
@@ -882,10 +937,45 @@ class orderController{
                 }
             }
 
+            // Nếu đơn hàng đã được đánh dấu là đang giao hàng
+            if (status === orderStatuses.shipped.id) {
+                // Có thể gửi thông báo cho khách hàng
+                console.log(`Đơn hàng ${orderId} đang được giao`);
+            }
+
+            // Nếu đơn hàng đã hoàn trả
+            if (status === orderStatuses.returned.id && sellerOrder.payment_status === paymentStatuses.paid.id) {
+                for (const product of sellerOrder.products) {
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: product.quantity,
+                                sold: -product.quantity 
+                            } 
+                        },
+                        { session }
+                    );
+                    console.log(`Sản phẩm đã hoàn trả: ${product.productId}`);
+                }
+                
+                // Cập nhật trạng thái thanh toán thành hoàn tiền
+                const refundData = { payment_status: paymentStatuses.refunded.id };
+                await authOrderModel.findByIdAndUpdate(orderId, refundData, { session });
+                
+                if (sellerOrder.orderId) {
+                    await customerOrder.findByIdAndUpdate(sellerOrder.orderId, refundData, { session });
+                }
+            }
+
             await session.commitTransaction();
             responseReturn(res, 200, { 
                 message: 'Cập nhật trạng thái đơn hàng thành công',
-                updatedData: updateData
+                updatedData: {
+                    ...updateData,
+                    statusName: status ? orderStatuses[status].name : undefined,
+                    paymentStatusName: payment_status ? paymentStatuses[payment_status].name : undefined
+                }
             });
         } catch (error) {
             await session.abortTransaction();
@@ -1017,22 +1107,25 @@ class orderController{
                 throw new Error('Đơn hàng không tồn tại');
             }
 
-            if (order.payment_status === 'paid') {
+            const paymentStatuses = this.getPaymentStatuses();
+            const orderStatuses = this.getOrderStatuses();
+
+            if (order.payment_status === paymentStatuses.paid.id) {
                 throw new Error('Đơn hàng đã được thanh toán');
             }
 
             // Cập nhật trạng thái đơn hàng
             await customerOrder.findByIdAndUpdate(orderId, {
-                payment_status: 'paid',
-                delivery_status: 'processing',
+                payment_status: paymentStatuses.paid.id,
+                delivery_status: orderStatuses.processing.id,
                 payment_method: paymentMethod
             }, { session });
 
             await authOrderModel.updateMany(
                 { orderId: new ObjectId(orderId) },
                 {
-                    payment_status: 'paid',
-                    delivery_status: 'processing',
+                    payment_status: paymentStatuses.paid.id,
+                    delivery_status: orderStatuses.processing.id,
                     payment_method: paymentMethod
                 },
                 { session }
@@ -1169,6 +1262,159 @@ class orderController{
         }
     }
 
+    // Lấy danh sách trạng thái đơn hàng và thanh toán
+    get_order_statuses = async (req, res) => {
+        try {
+            const orderStatuses = this.getOrderStatuses();
+            const paymentStatuses = this.getPaymentStatuses();
+            
+            responseReturn(res, 200, {
+                orderStatuses,
+                paymentStatuses
+            });
+        } catch (error) {
+            console.error('Get order statuses error:', error);
+            responseReturn(res, 500, {
+                message: error.message || 'Lỗi khi lấy danh sách trạng thái',
+                success: false
+            });
+        }
+    }
+
+    // Hàm hỗ trợ: Danh sách trạng thái đơn hàng
+    getOrderStatuses() {
+        return {
+            pending: {
+                id: 'pending',
+                name: 'Chờ xử lý',
+                description: 'Đơn hàng đang chờ xác nhận'
+            },
+            processing: {
+                id: 'processing',
+                name: 'Đang xử lý',
+                description: 'Đơn hàng đang được chuẩn bị'
+            },
+            shipped: {
+                id: 'shipped',
+                name: 'Đang giao hàng',
+                description: 'Đơn hàng đã được giao cho đơn vị vận chuyển'
+            },
+            delivered: {
+                id: 'delivered',
+                name: 'Đã giao hàng',
+                description: 'Đơn hàng đã được giao thành công'
+            },
+            completed: {
+                id: 'completed',
+                name: 'Hoàn thành',
+                description: 'Đơn hàng đã hoàn thành'
+            },
+            cancelled: {
+                id: 'cancelled',
+                name: 'Đã hủy',
+                description: 'Đơn hàng đã bị hủy'
+            },
+            returned: {
+                id: 'returned',
+                name: 'Đã hoàn trả',
+                description: 'Đơn hàng đã được hoàn trả'
+            }
+        };
+    }
+
+    // Hàm hỗ trợ: Danh sách trạng thái thanh toán
+    getPaymentStatuses() {
+        return {
+            unpaid: {
+                id: 'unpaid',
+                name: 'Chưa thanh toán',
+                description: 'Đơn hàng chưa được thanh toán'
+            },
+            pending: {
+                id: 'pending',
+                name: 'Chờ thanh toán',
+                description: 'Đang chờ xác nhận thanh toán'
+            },
+            paid: {
+                id: 'paid',
+                name: 'Đã thanh toán',
+                description: 'Đơn hàng đã được thanh toán'
+            },
+            refunded: {
+                id: 'refunded',
+                name: 'Đã hoàn tiền',
+                description: 'Tiền đã được hoàn trả cho khách hàng'
+            },
+            failed: {
+                id: 'failed',
+                name: 'Thanh toán thất bại',
+                description: 'Thanh toán không thành công'
+            }
+        };
+    }
+
+    // Hàm hỗ trợ: Xử lý đơn hàng COD (không thay đổi trạng thái thanh toán)
+    async processCodOrder(orderId) {
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+
+            const order = await customerOrder.findById(orderId).session(session);
+            if (!order) {
+                throw new Error('Đơn hàng không tồn tại');
+            }
+
+            const orderStatuses = this.getOrderStatuses();
+
+            // Chỉ cập nhật trạng thái đơn hàng, không thay đổi trạng thái thanh toán
+            await customerOrder.findByIdAndUpdate(orderId, {
+                delivery_status: orderStatuses.processing.id
+            }, { session });
+
+            await authOrderModel.updateMany(
+                { orderId: new ObjectId(orderId) },
+                {
+                    delivery_status: orderStatuses.processing.id
+                },
+                { session }
+            );
+
+            // Cập nhật số lượng sản phẩm trong kho
+            for (const product of order.products) {
+                const productDoc = await productModel.findById(product.productId).session(session);
+                if (!productDoc) {
+                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                }
+                
+                if (productDoc.stock < product.quantity) {
+                    throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
+                }
+                
+                await productModel.findByIdAndUpdate(
+                    product.productId,
+                    { 
+                        $inc: { 
+                            stock: -product.quantity,
+                            sold: product.quantity
+                        } 
+                    },
+                    { session }
+                );
+                
+                console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
+            }
+
+            await session.commitTransaction();
+            return order;
+
+        } catch (error) {
+            await session.abortTransaction();
+            console.error('Process COD order error:', error);
+            throw error;
+        } finally {
+            session.endSession();
+        }
+    }
 }
 
 module.exports = new orderController()

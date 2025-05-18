@@ -7,9 +7,13 @@ router.get('/home/coustomer/get-dashboard-data/:userId',orderController.get_cust
 router.get('/home/coustomer/get-orders/:customerId/:status',orderController.get_orders)
 router.get('/home/coustomer/get-order-details/:orderId',orderController.get_order_details)
 
+// Order status
+router.get('/order/statuses',orderController.get_order_statuses)
+
 // Payment success and confirmation
 router.get('/order/payment-success',orderController.order_payment_success)
 router.get('/order-confirmation/:orderId',orderController.get_order_details)
+router.put('/order/confirm-cod-payment/:orderId',orderController.confirm_cod_payment)
 
 // Admin
 router.get('/admin/orders',orderController.get_admin_orders)
