@@ -112,6 +112,18 @@ class orderController{
                 throw new Error('Danh sách sản phẩm không hợp lệ');
             }
 
+            // Kiểm tra số lượng sản phẩm trong kho
+            for (const product of products) {
+                const productDoc = await productModel.findById(product.productId).session(session);
+                if (!productDoc) {
+                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                }
+                
+                if (productDoc.stock < product.quantity) {
+                    throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho (Còn ${productDoc.stock}, cần ${product.quantity})`);
+                }
+            }
+
             // Tính phí vận chuyển
             const shipping_fee = price >= 500000 ? 0 : 40000;
             const totalPrice = price + shipping_fee;
@@ -637,15 +649,50 @@ class orderController{
     admin_order_status_update = async (req, res) => {
         const { orderId } = req.params
         const { status } = req.body
+        const session = await mongoose.startSession();
 
         try {
+            session.startTransaction();
+
+            // Lấy thông tin đơn hàng trước khi cập nhật
+            const order = await customerOrder.findById(orderId).session(session);
+            if (!order) {
+                throw new Error('Không tìm thấy đơn hàng');
+            }
+
+            // Cập nhật trạng thái đơn hàng
             await customerOrder.findByIdAndUpdate(orderId, {
                 delivery_status: status
-            })
-            responseReturn(res, 200, { message: 'Cập nhật trạng thái đơn hàng thành công' })
+            }, { session });
+
+            // Nếu đơn hàng bị hủy và đã thanh toán, hoàn lại số lượng sản phẩm trong kho
+            if (status === 'cancelled' && order.payment_status === 'paid') {
+                for (const product of order.products) {
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: product.quantity,
+                                sold: -product.quantity 
+                            } 
+                        },
+                        { session }
+                    );
+                    console.log(`Đã hoàn trả sản phẩm ${product.productId}: tăng ${product.quantity} đơn vị stock, giảm ${product.quantity} đơn vị sold`);
+                }
+
+                // Gửi thông báo hủy đơn hàng
+                await this.sendOrderCancellationNotification(order.customerId, orderId);
+            }
+
+            await session.commitTransaction();
+            responseReturn(res, 200, { message: 'Cập nhật trạng thái đơn hàng thành công' });
         } catch (error) {
-            console.log('Lỗi cập nhật trạng thái đơn hàng: ' + error.message)
-            responseReturn(res, 500, { message: 'Lỗi máy chủ' })
+            await session.abortTransaction();
+            console.log('Lỗi cập nhật trạng thái đơn hàng: ' + error.message);
+            responseReturn(res, 500, { message: 'Lỗi máy chủ' });
+        } finally {
+            session.endSession();
         }
     }
 
@@ -779,8 +826,11 @@ class orderController{
     seller_order_status_update = async (req, res) => {
         const { orderId } = req.params
         const { status, payment_status } = req.body
+        const session = await mongoose.startSession();
 
         try {
+            session.startTransaction();
+
             const updateData = {};
             
             // Cập nhật trạng thái giao hàng nếu có
@@ -793,22 +843,56 @@ class orderController{
                 updateData.payment_status = payment_status;
             }
 
-            // Cập nhật đơn hàng của seller
-            await authOrderModel.findByIdAndUpdate(orderId, updateData);
-
-            // Cập nhật đơn hàng chính nếu cần
-            const sellerOrder = await authOrderModel.findById(orderId);
-            if (sellerOrder) {
-                await customerOrder.findByIdAndUpdate(sellerOrder.orderId, updateData);
+            // Lấy thông tin đơn hàng của seller trước khi cập nhật
+            const sellerOrder = await authOrderModel.findById(orderId).session(session);
+            if (!sellerOrder) {
+                throw new Error('Không tìm thấy đơn hàng');
             }
 
+            // Cập nhật đơn hàng của seller
+            await authOrderModel.findByIdAndUpdate(orderId, updateData, { session });
+
+            // Cập nhật đơn hàng chính nếu cần
+            if (sellerOrder) {
+                await customerOrder.findByIdAndUpdate(sellerOrder.orderId, updateData, { session });
+            }
+
+            // Nếu đơn hàng bị hủy và đã thanh toán, hoàn lại số lượng sản phẩm trong kho
+            if (status === 'cancelled' && sellerOrder.payment_status === 'paid') {
+                for (const product of sellerOrder.products) {
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: product.quantity,
+                                sold: -product.quantity 
+                            } 
+                        },
+                        { session }
+                    );
+                    console.log(`Đã hoàn trả sản phẩm ${product.productId}: tăng ${product.quantity} đơn vị stock, giảm ${product.quantity} đơn vị sold`);
+                }
+
+                // Gửi thông báo hủy đơn hàng cho khách hàng
+                if (sellerOrder.orderId) {
+                    const customerOrderDoc = await customerOrder.findById(sellerOrder.orderId).session(session);
+                    if (customerOrderDoc) {
+                        await this.sendOrderCancellationNotification(customerOrderDoc.customerId, sellerOrder.orderId);
+                    }
+                }
+            }
+
+            await session.commitTransaction();
             responseReturn(res, 200, { 
                 message: 'Cập nhật trạng thái đơn hàng thành công',
                 updatedData: updateData
             });
         } catch (error) {
+            await session.abortTransaction();
             console.log('Lỗi cập nhật trạng thái người bán: ' + error.message);
             responseReturn(res, 500, { message: 'Lỗi máy chủ' });
+        } finally {
+            session.endSession();
         }
     }
 
@@ -953,6 +1037,31 @@ class orderController{
                 },
                 { session }
             );
+
+            // Cập nhật số lượng sản phẩm trong kho
+            for (const product of order.products) {
+                const productDoc = await productModel.findById(product.productId).session(session);
+                if (!productDoc) {
+                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                }
+                
+                if (productDoc.stock < product.quantity) {
+                    throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
+                }
+                
+                await productModel.findByIdAndUpdate(
+                    product.productId,
+                    { 
+                        $inc: { 
+                            stock: -product.quantity,
+                            sold: product.quantity
+                        } 
+                    },
+                    { session }
+                );
+                
+                console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
+            }
 
             // Cập nhật ví
             const auOrder = await authOrderModel.find({

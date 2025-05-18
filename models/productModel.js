@@ -63,6 +63,10 @@ const productSchema = new Schema({
     rating: {
         type: Number,
         default : 0
+    },
+    sold: {
+        type: Number,
+        default: 0
     } 
      
 }, {timestamps: true})
