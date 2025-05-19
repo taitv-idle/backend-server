@@ -22,7 +22,7 @@ class ProductController {
                 return responseReturn(res, 400, { error: 'Lỗi khi xử lý biểu mẫu' });
             }
 
-            const { name, category, description, stock, price, discount, shopName, brand, size, color } = field;
+            const { name, category, description, stock, price, discount, shopName, brand, size, color, tags } = field;
             const { images } = files;
 
             if (!name || !category || !price || !stock || !images || !size || !color) {
@@ -46,8 +46,26 @@ class ProductController {
                 }
 
                 // Xử lý size và color thành mảng
-                const sizeArray = Array.isArray(size) ? size : [size];
-                const colorArray = Array.isArray(color) ? color : [color];
+                const sizeArray = Array.isArray(size) 
+                    ? size 
+                    : (typeof size === 'string' && size.startsWith('[') && size.endsWith(']') 
+                        ? JSON.parse(size) 
+                        : [size]);
+                
+                const colorArray = Array.isArray(color) 
+                    ? color 
+                    : (typeof color === 'string' && color.startsWith('[') && color.endsWith(']') 
+                        ? JSON.parse(color) 
+                        : [color]);
+                
+                // Xử lý tags thành mảng
+                const tagsArray = tags 
+                    ? (Array.isArray(tags) 
+                        ? tags 
+                        : (typeof tags === 'string' && tags.startsWith('[') && tags.endsWith(']') 
+                            ? JSON.parse(tags) 
+                            : [tags])) 
+                    : [];
 
                 const product = await productModel.create({
                     sellerId: id,
@@ -62,7 +80,8 @@ class ProductController {
                     images: allImageUrl,
                     brand: brand?.trim(),
                     size: sizeArray,
-                    color: colorArray
+                    color: colorArray,
+                    tags: tagsArray
                 });
 
                 responseReturn(res, 201, { product, message: 'Thêm sản phẩm thành công' });
@@ -73,27 +92,36 @@ class ProductController {
     };
 
     products_get = async (req, res) => {
-        const { page, searchValue, parPage } = req.query;
+        const { page, searchValue, parPage, tagFilter } = req.query;
         const { id } = req;
         const skipPage = parseInt(parPage) * (parseInt(page) - 1);
 
         try {
             let products, totalProduct;
+            let query = { sellerId: id };
+
+            // Tìm kiếm theo tag nếu có
+            if (tagFilter) {
+                query.tags = { $in: Array.isArray(tagFilter) ? tagFilter : [tagFilter] };
+            }
+
             if (searchValue) {
-                products = await productModel.find({
-                    $text: { $search: searchValue },
-                    sellerId: id
-                }).skip(skipPage).limit(parseInt(parPage)).sort({ createdAt: -1 });
-                totalProduct = await productModel.find({
-                    $text: { $search: searchValue },
-                    sellerId: id
-                }).countDocuments();
-            } else {
-                products = await productModel.find({ sellerId: id })
+                // Kết hợp tìm kiếm text với điều kiện tag (nếu có)
+                query.$text = { $search: searchValue };
+                
+                products = await productModel.find(query)
                     .skip(skipPage)
                     .limit(parseInt(parPage))
                     .sort({ createdAt: -1 });
-                totalProduct = await productModel.find({ sellerId: id }).countDocuments();
+                    
+                totalProduct = await productModel.find(query).countDocuments();
+            } else {
+                products = await productModel.find(query)
+                    .skip(skipPage)
+                    .limit(parseInt(parPage))
+                    .sort({ createdAt: -1 });
+                    
+                totalProduct = await productModel.find(query).countDocuments();
             }
 
             responseReturn(res, 200, { products, totalProduct });
@@ -151,7 +179,7 @@ class ProductController {
     };
 
     product_update = async (req, res) => {
-        const { name, description, stock, price, category, discount, brand, productId, size, color } = req.body;
+        const { name, description, stock, price, category, discount, brand, productId, size, color, tags } = req.body;
         if (!productId || !name || !category || !price || !stock || !size || !color) {
             return responseReturn(res, 400, { error: 'Vui lòng cung cấp đầy đủ thông tin: productId, tên, danh mục, giá, số lượng, kích thước, màu sắc' });
         }
@@ -165,8 +193,26 @@ class ProductController {
             const slug = await createSlug(trimmedName, productModel, productId);
 
             // Xử lý size và color thành mảng
-            const sizeArray = Array.isArray(size) ? size : [size];
-            const colorArray = Array.isArray(color) ? color : [color];
+            const sizeArray = Array.isArray(size) 
+                ? size 
+                : (typeof size === 'string' && size.startsWith('[') && size.endsWith(']') 
+                    ? JSON.parse(size) 
+                    : [size]);
+            
+            const colorArray = Array.isArray(color) 
+                ? color 
+                : (typeof color === 'string' && color.startsWith('[') && color.endsWith(']') 
+                    ? JSON.parse(color) 
+                    : [color]);
+            
+            // Xử lý tags thành mảng
+            const tagsArray = tags 
+                ? (Array.isArray(tags) 
+                    ? tags 
+                    : (typeof tags === 'string' && tags.startsWith('[') && tags.endsWith(']') 
+                        ? JSON.parse(tags) 
+                        : [tags])) 
+                : [];
 
             const product = await productModel.findByIdAndUpdate(
                 productId,
@@ -180,7 +226,8 @@ class ProductController {
                     discount: parseInt(discount) || 0,
                     brand: brand?.trim(),
                     size: sizeArray,
-                    color: colorArray
+                    color: colorArray,
+                    tags: tagsArray
                 },
                 { new: true }
             );
@@ -229,7 +276,7 @@ class ProductController {
     };
 
     discount_products_get = async (req, res) => {
-        const { page, searchValue, parPage, minDiscount } = req.query;
+        const { page, searchValue, parPage, minDiscount, tagFilter } = req.query;
         const { id } = req;
         const skipPage = parseInt(parPage) * (parseInt(page) - 1);
         const minDiscountValue = parseInt(minDiscount) || 10;
@@ -239,6 +286,11 @@ class ProductController {
                 sellerId: id,
                 discount: { $gte: minDiscountValue }
             };
+
+            // Tìm kiếm theo tag nếu có
+            if (tagFilter) {
+                query.tags = { $in: Array.isArray(tagFilter) ? tagFilter : [tagFilter] };
+            }
 
             if (searchValue) {
                 query.$text = { $search: searchValue };

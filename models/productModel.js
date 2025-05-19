@@ -60,6 +60,10 @@ const productSchema = new Schema({
         type: [String],
         required: true
     },
+    tags: {
+        type: [String],
+        default: []
+    },
     rating: {
         type: Number,
         default : 0
@@ -75,13 +79,15 @@ productSchema.index({
     name: 'text',
     category: 'text',
     brand: 'text',
-    description: 'text'
+    description: 'text',
+    tags: 'text'
 },{
     weights: {
         name: 5,
         category: 4,
         brand: 3,
-        description: 2
+        description: 2,
+        tags: 4
     }
 })
 
