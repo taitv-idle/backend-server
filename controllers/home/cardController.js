@@ -5,26 +5,28 @@ const wishlistModel = require('../../models/wishlistModel')
 
 class cardController {
     add_to_card = async(req, res) => {
-        const { userId, productId, quantity } = req.body
+        const { userId, productId, quantity, color, size } = req.body
 
-        if (!userId || !productId || !quantity) {
+        if (!userId || !productId || !quantity || !color || !size) {
             return responseReturn(res, 400, { 
                 success: false,
                 message: "Vui lòng điền đầy đủ thông tin",
-                requiredFields: ['userId', 'productId', 'quantity']
+                requiredFields: ['userId', 'productId', 'quantity', 'color', 'size']
             })
         }
 
         try {
             const product = await cardModel.findOne({
                 productId,
-                userId
+                userId,
+                color,
+                size
             })
 
             if (product) {
                 return responseReturn(res, 400, { 
                     success: false,
-                    message: "Sản phẩm đã có trong giỏ hàng",
+                    message: "Sản phẩm với màu sắc và kích thước này đã có trong giỏ hàng",
                     productId
                 })
             }
@@ -32,7 +34,9 @@ class cardController {
             const newProduct = await cardModel.create({
                 userId,
                 productId,
-                quantity
+                quantity,
+                color,
+                size
             })
 
             return responseReturn(res, 201, {
@@ -111,6 +115,8 @@ class cardController {
                             $push: {
                                 _id: "$$ROOT._id",
                                 quantity: "$$ROOT.quantity",
+                                color: "$$ROOT.color",
+                                size: "$$ROOT.size",
                                 productInfo: "$$ROOT.products",
                                 isOutOfStock: "$$ROOT.isOutOfStock",
                                 productPrice: "$$ROOT.productPrice"

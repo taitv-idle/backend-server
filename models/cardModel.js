@@ -12,12 +12,21 @@ const cardSchema = new Schema({
     quantity: {
         type: Number,
         required : true, 
-    } 
+    },
+    color: {
+        type: String,
+        required: true
+    },
+    size: {
+        type: String,
+        required: true
+    }
 },{ timestamps: true })
 
 // Thêm index để cải thiện hiệu suất truy vấn
 cardSchema.index({ userId: 1 });
 cardSchema.index({ productId: 1 });
-cardSchema.index({ userId: 1, productId: 1 }, { unique: true });
+// Cập nhật index để bao gồm color và size
+cardSchema.index({ userId: 1, productId: 1, color: 1, size: 1 }, { unique: true });
 
 module.exports = model('cardProducts',cardSchema)
