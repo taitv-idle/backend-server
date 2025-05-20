@@ -14,10 +14,12 @@ const formidable = require("formidable")
 
 class dashboardController{
 
-
     get_admin_dashboard_data = async (req, res) => {
+        console.log('=== Dashboard Request ===');
+        console.log('User ID:', req.id);
         const { id } = req;
         try {
+            console.log('1. Getting total sale...');
             // Lấy tổng doanh thu
             const totalSale = await myShopWallet.aggregate([
                 {
@@ -27,7 +29,9 @@ class dashboardController{
                     }
                 }
             ]);
+            console.log('Total Sale:', totalSale);
 
+            console.log('2. Getting monthly data...');
             // Lấy thống kê theo tháng
             const monthlyData = await customerOrder.aggregate([
                 {
@@ -44,7 +48,9 @@ class dashboardController{
                     $sort: { "_id.year": 1, "_id.month": 1 }
                 }
             ]);
+            console.log('Monthly Data:', monthlyData);
 
+            console.log('3. Getting new sellers data...');
             // Lấy số lượng người bán mới theo tháng
             const newSellersData = await sellerModel.aggregate([
                 {
@@ -60,6 +66,7 @@ class dashboardController{
                     $sort: { "_id.year": 1, "_id.month": 1 }
                 }
             ]);
+            console.log('New Sellers Data:', newSellersData);
 
             // Kết hợp dữ liệu và tạo mảng đầy đủ 12 tháng
             const fullYearData = Array.from({ length: 12 }, (_, i) => {
@@ -74,25 +81,169 @@ class dashboardController{
                     newSellers: sellerData ? sellerData.newSellers : 0
                 };
             });
+            console.log('Full Year Data:', fullYearData);
 
+            console.log('4. Getting order status stats...');
+            // Lấy thống kê trạng thái đơn hàng
+            const orderStatusStats = await customerOrder.aggregate([
+                {
+                    $group: {
+                        _id: "$delivery_status",
+                        count: { $sum: 1 }
+                    }
+                }
+            ]);
+            console.log('Order Status Stats:', orderStatusStats);
+
+            // Format order status stats
+            const formattedOrderStatusStats = [
+                orderStatusStats.find(s => s._id === 'delivered')?.count || 0,
+                orderStatusStats.find(s => s._id === 'processing')?.count || 0,
+                orderStatusStats.find(s => s._id === 'inStock')?.count || 0,
+                orderStatusStats.find(s => s._id === 'ordered')?.count || 0,
+                orderStatusStats.find(s => s._id === 'cancelled')?.count || 0,
+                orderStatusStats.find(s => s._id === 'pending')?.count || 0
+            ];
+            console.log('Formatted Order Status Stats:', formattedOrderStatusStats);
+
+            console.log('5. Getting payment method stats...');
+            // Lấy thống kê phương thức thanh toán
+            const paymentMethodStats = await customerOrder.aggregate([
+                {
+                    $group: {
+                        _id: "$payment_status",
+                        count: { $sum: 1 }
+                    }
+                }
+            ]);
+            console.log('Payment Method Stats:', paymentMethodStats);
+
+            // Format payment method stats
+            const formattedPaymentMethodStats = [
+                paymentMethodStats.find(s => s._id === 'paid')?.count || 0,
+                paymentMethodStats.find(s => s._id === 'pending')?.count || 0
+            ];
+            console.log('Formatted Payment Method Stats:', formattedPaymentMethodStats);
+
+            console.log('6. Getting top products...');
+            // Lấy sản phẩm bán chạy
+            const topProducts = await productModel.aggregate([
+                {
+                    $lookup: {
+                        from: "customerorders",
+                        let: { productId: "$_id" },
+                        pipeline: [
+                            {
+                                $match: {
+                                    $expr: {
+                                        $and: [
+                                            { $eq: ["$payment_status", "paid"] },
+                                            { $in: ["$$productId", "$products.productId"] }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                $unwind: "$products"
+                            },
+                            {
+                                $match: {
+                                    $expr: {
+                                        $eq: ["$products.productId", "$$productId"]
+                                    }
+                                }
+                            }
+                        ],
+                        as: "orders"
+                    }
+                },
+                {
+                    $addFields: {
+                        totalSold: {
+                            $sum: {
+                                $map: {
+                                    input: "$orders",
+                                    as: "order",
+                                    in: "$$order.products.quantity"
+                                }
+                            }
+                        },
+                        totalRevenue: {
+                            $sum: {
+                                $map: {
+                                    input: "$orders",
+                                    as: "order",
+                                    in: {
+                                        $multiply: ["$$order.products.price", "$$order.products.quantity"]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    $project: {
+                        _id: 1,
+                        name: 1,
+                        images: 1,
+                        totalSold: 1,
+                        totalRevenue: 1
+                    }
+                },
+                {
+                    $sort: { totalSold: -1 }
+                },
+                {
+                    $limit: 5
+                }
+            ]);
+            console.log('Top Products:', JSON.stringify(topProducts, null, 2));
+
+            console.log('7. Getting new sellers...');
+            // Lấy người bán mới
+            const newSellers = await sellerModel.find({})
+                .sort({ createdAt: -1 })
+                .limit(5)
+                .select('name image createdAt totalSales')
+                .lean();
+            console.log('New Sellers:', newSellers);
+
+            console.log('8. Getting recent orders...');
+            // Lấy đơn hàng gần đây
+            const recentOrders = await customerOrder.find({})
+                .sort({ createdAt: -1 })
+                .limit(5)
+                .populate({
+                    path: 'products.productId',
+                    select: 'name images price'
+                })
+                .lean();
+            console.log('Recent Orders:', recentOrders);
+
+            console.log('9. Getting total counts...');
             const totalProduct = await productModel.find({}).countDocuments();
             const totalOrder = await customerOrder.find({}).countDocuments();
             const totalSeller = await sellerModel.find({}).countDocuments();
-            const messages = await adminSellerMessage.find({}).limit(3);
-            const recentOrders = await customerOrder.find({}).limit(5);
+            console.log('Total Counts:', { totalProduct, totalOrder, totalSeller });
 
-            responseReturn(res, 200, {
+            const responseData = {
                 totalProduct,
                 totalOrder,
                 totalSeller,
-                messages,
-                recentOrders,
                 totalSale: totalSale.length > 0 ? totalSale[0].totalAmount : 0,
-                monthlyData: fullYearData // Thêm dữ liệu theo tháng
-            });
+                monthlyData: fullYearData,
+                orderStatusStats: formattedOrderStatusStats,
+                paymentMethodStats: formattedPaymentMethodStats,
+                topProducts,
+                newSellers,
+                recentOrders
+            };
+            console.log('Final Response Data:', responseData);
+
+            responseReturn(res, 200, responseData);
 
         } catch (error) {
-            console.log(error.message);
+            console.log('Dashboard Error:', error);
             responseReturn(res, 500, { error: error.message });
         }
     }

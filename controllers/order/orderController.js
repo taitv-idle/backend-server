@@ -139,23 +139,41 @@ class orderController{
             let cardId = [];
             let customerOrderProduct = [];
 
-            // Lấy thông tin seller từ sản phẩm đầu tiên
-            const firstProduct = await productModel.findById(products[0].productId);
-            if (!firstProduct) {
-                throw new Error('Không tìm thấy thông tin sản phẩm');
-            }
-
-            const sellerId = firstProduct.sellerId;
-
-            // Xử lý danh sách sản phẩm theo cấu trúc mới
+            // Nhóm sản phẩm theo người bán
+            const productsBySeller = {};
+            
             for (const product of products) {
+                // Lấy thông tin sản phẩm bao gồm người bán
+                const productDoc = await productModel.findById(product.productId).session(session);
+                if (!productDoc) {
+                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                }
+                
+                const sellerId = productDoc.sellerId.toString();
                 const productInfo = {
                     productId: product.productId,
                     quantity: product.quantity,
                     price: product.price,
                     discount: product.discount
                 };
+                
+                // Thêm vào danh sách sản phẩm của đơn hàng chính
                 customerOrderProduct.push(productInfo);
+                
+                // Nhóm theo người bán
+                if (!productsBySeller[sellerId]) {
+                    productsBySeller[sellerId] = {
+                        sellerId: sellerId,
+                        shopName: productDoc.shopName || 'Shop',
+                        products: [],
+                        price: 0
+                    };
+                }
+                
+                productsBySeller[sellerId].products.push(productInfo);
+                productsBySeller[sellerId].price += product.price * product.quantity;
+                
+                // Lưu ID giỏ hàng nếu có để xóa sau khi đặt hàng
                 if (product._id) cardId.push(product._id);
             }
 
@@ -179,28 +197,33 @@ class orderController{
                 payment_method: paymentMethod,
                 date: tempDate
             }], { session });
-
-            // Tạo đơn hàng cho seller
-            authorOrderData.push({
-                orderId: order[0].id,
-                sellerId: sellerId,
-                products: customerOrderProduct,
-                price: price,
-                shipping_fee: shipping_fee,
-                payment_status: paymentMethod === 'cod' ? paymentStatuses.pending.id : paymentStatuses.unpaid.id,
-                shippingAddress: {
-                    name: shippingInfo.name,
-                    phone: shippingInfo.phone,
-                    address: shippingInfo.address,
-                    province: shippingInfo.province,
-                    city: shippingInfo.city,
-                    area: shippingInfo.area,
-                    post: shippingInfo.post || ''
-                },
-                delivery_status: orderStatuses.pending.id,
-                payment_method: paymentMethod,
-                date: tempDate
-            });
+            
+            // Tạo đơn hàng con cho từng người bán
+            for (const sellerId in productsBySeller) {
+                // Phân bổ phí vận chuyển cho mỗi người bán (hoặc có thể tính riêng)
+                const sellerShippingFee = shipping_fee / Object.keys(productsBySeller).length;
+                
+                authorOrderData.push({
+                    orderId: order[0].id,
+                    sellerId: new ObjectId(sellerId),
+                    products: productsBySeller[sellerId].products,
+                    price: productsBySeller[sellerId].price,
+                    shipping_fee: sellerShippingFee,
+                    payment_status: paymentMethod === 'cod' ? paymentStatuses.pending.id : paymentStatuses.unpaid.id,
+                    shippingAddress: {
+                        name: shippingInfo.name,
+                        phone: shippingInfo.phone,
+                        address: shippingInfo.address,
+                        province: shippingInfo.province,
+                        city: shippingInfo.city,
+                        area: shippingInfo.area,
+                        post: shippingInfo.post || ''
+                    },
+                    delivery_status: orderStatuses.pending.id,
+                    payment_method: paymentMethod,
+                    date: tempDate
+                });
+            }
 
             await authOrderModel.insertMany(authorOrderData, { session });
 
@@ -1114,13 +1137,14 @@ class orderController{
                 throw new Error('Đơn hàng đã được thanh toán');
             }
 
-            // Cập nhật trạng thái đơn hàng
+            // Cập nhật trạng thái đơn hàng chính
             await customerOrder.findByIdAndUpdate(orderId, {
                 payment_status: paymentStatuses.paid.id,
                 delivery_status: orderStatuses.processing.id,
                 payment_method: paymentMethod
             }, { session });
 
+            // Cập nhật trạng thái thanh toán cho tất cả đơn hàng con
             await authOrderModel.updateMany(
                 { orderId: new ObjectId(orderId) },
                 {
@@ -1131,52 +1155,53 @@ class orderController{
                 { session }
             );
 
-            // Cập nhật số lượng sản phẩm trong kho
-            for (const product of order.products) {
-                const productDoc = await productModel.findById(product.productId).session(session);
-                if (!productDoc) {
-                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
-                }
-                
-                if (productDoc.stock < product.quantity) {
-                    throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
-                }
-                
-                await productModel.findByIdAndUpdate(
-                    product.productId,
-                    { 
-                        $inc: { 
-                            stock: -product.quantity,
-                            sold: product.quantity
-                        } 
-                    },
-                    { session }
-                );
-                
-                console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
-            }
-
-            // Cập nhật ví
-            const auOrder = await authOrderModel.find({
-                orderId: new ObjectId(orderId)
-            }).session(session);
-
+            // Cập nhật ví của các người bán và ví cửa hàng
+            const sellerOrders = await authOrderModel.find({ orderId: new ObjectId(orderId) }).session(session);
             const time = moment(Date.now()).format('l');
             const splitTime = time.split('/');
 
-            await myShopWallet.create([{
+            // Cập nhật ví của cửa hàng
+            await myShopWallet.create({
                 amount: order.price,
                 month: splitTime[0],
                 year: splitTime[2]
-            }], { session });
+            }, { session });
 
-            for (const sellerOrder of auOrder) {
-                await sellerWallet.create([{
+            // Cập nhật ví cho từng người bán
+            for (const sellerOrder of sellerOrders) {
+                await sellerWallet.create({
                     sellerId: sellerOrder.sellerId.toString(),
                     amount: sellerOrder.price,
                     month: splitTime[0],
                     year: splitTime[2]
-                }], { session });
+                }, { session });
+            }
+
+            // Cập nhật số lượng trong kho
+            for (const sellerOrder of sellerOrders) {
+                for (const product of sellerOrder.products) {
+                    const productDoc = await productModel.findById(product.productId).session(session);
+                    if (!productDoc) {
+                        throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                    }
+                    
+                    if (productDoc.stock < product.quantity) {
+                        throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
+                    }
+                    
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: -product.quantity,
+                                sold: product.quantity
+                            } 
+                        },
+                        { session }
+                    );
+                    
+                    console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
+                }
             }
 
             await session.commitTransaction();
@@ -1371,6 +1396,13 @@ class orderController{
                 delivery_status: orderStatuses.processing.id
             }, { session });
 
+            // Cập nhật tất cả đơn hàng con của các người bán
+            const sellerOrders = await authOrderModel.find({ orderId: new ObjectId(orderId) }).session(session);
+            
+            // Lấy tất cả productId từ tất cả đơn hàng con
+            const allProducts = sellerOrders.flatMap(order => order.products);
+
+            // Cập nhật trạng thái cho tất cả đơn hàng con
             await authOrderModel.updateMany(
                 { orderId: new ObjectId(orderId) },
                 {
@@ -1379,29 +1411,31 @@ class orderController{
                 { session }
             );
 
-            // Cập nhật số lượng sản phẩm trong kho
-            for (const product of order.products) {
-                const productDoc = await productModel.findById(product.productId).session(session);
-                if (!productDoc) {
-                    throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+            // Cập nhật số lượng sản phẩm trong kho cho từng người bán
+            for (const sellerOrder of sellerOrders) {
+                for (const product of sellerOrder.products) {
+                    const productDoc = await productModel.findById(product.productId).session(session);
+                    if (!productDoc) {
+                        throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                    }
+                    
+                    if (productDoc.stock < product.quantity) {
+                        throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
+                    }
+                    
+                    await productModel.findByIdAndUpdate(
+                        product.productId,
+                        { 
+                            $inc: { 
+                                stock: -product.quantity,
+                                sold: product.quantity
+                            } 
+                        },
+                        { session }
+                    );
+                    
+                    console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
                 }
-                
-                if (productDoc.stock < product.quantity) {
-                    throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
-                }
-                
-                await productModel.findByIdAndUpdate(
-                    product.productId,
-                    { 
-                        $inc: { 
-                            stock: -product.quantity,
-                            sold: product.quantity
-                        } 
-                    },
-                    { session }
-                );
-                
-                console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
             }
 
             await session.commitTransaction();
