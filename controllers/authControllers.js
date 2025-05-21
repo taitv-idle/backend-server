@@ -1,12 +1,16 @@
 const adminModel = require('../models/adminModel');
 const sellerModel = require('../models/sellerModel');
 const sellerCustomerModel = require('../models/chat/sellerCustomerModel');
+const passwordResetModel = require('../models/passwordResetModel');
 const { responseReturn } = require('../utils/response');
 const bcrpty = require('bcrypt');
 const { createToken } = require('../utils/tokenCreate');
-const cloudinary = require('cloudinary').v2;
+const cloudinaryConfig = require('../config/cloudinary');
 const formidable = require('formidable');
 const { validatePassword, validateEmail } = require('../middlewares/validate');
+const emailService = require('../services/emailService');
+const crypto = require('crypto');
+const moment = require('moment');
 
 class AuthControllers {
     /**
@@ -42,6 +46,12 @@ class AuthControllers {
                 httpOnly: true, // Bảo mật hơn
                 secure: process.env.NODE_ENV === 'production' // Chỉ gửi qua HTTPS trong production
             });
+
+            // Gửi email thông báo đăng nhập
+            const time = moment().format('HH:mm DD/MM/YYYY');
+            const device = req.headers['user-agent'] || 'Unknown device';
+            emailService.sendLoginNotification(admin.email, admin.name, time, device)
+                .catch(err => console.error('Không thể gửi email thông báo đăng nhập:', err));
 
             responseReturn(res, 200, {
                 token,
@@ -83,6 +93,12 @@ class AuthControllers {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production'
             });
+
+            // Gửi email thông báo đăng nhập
+            const time = moment().format('HH:mm DD/MM/YYYY');
+            const device = req.headers['user-agent'] || 'Unknown device';
+            emailService.sendLoginNotification(seller.email, seller.name, time, device)
+                .catch(err => console.error('Không thể gửi email thông báo đăng nhập:', err));
 
             responseReturn(res, 200, {
                 token,
@@ -151,6 +167,10 @@ class AuthControllers {
                 secure: process.env.NODE_ENV === 'production'
             });
 
+            // Gửi email chào mừng
+            emailService.sendWelcomeEmail(seller.email, seller.name, 'seller')
+                .catch(err => console.error('Không thể gửi email chào mừng:', err));
+
             responseReturn(res, 201, {
                 token,
                 message: 'Đăng ký seller thành công'
@@ -196,8 +216,6 @@ class AuthControllers {
         const { id } = req;
 
         // Sử dụng cấu hình Cloudinary từ file config
-        const cloudinaryConfig = require('../config/cloudinary');
-        
         const form = formidable({ multiples: true });
 
         form.parse(req, async (err, _, files) => {
@@ -331,6 +349,108 @@ class AuthControllers {
 
         } catch (error) {
             console.error('Lỗi đổi mật khẩu:', error);
+            responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    };
+
+    /**
+     * Yêu cầu đặt lại mật khẩu
+     */
+    forgot_password = async (req, res) => {
+        const { email, userType } = req.body;
+
+        try {
+            if (!email || !userType) {
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp email và loại tài khoản' });
+            }
+
+            // Kiểm tra email có hợp lệ không
+            if (!validateEmail(email)) {
+                return responseReturn(res, 400, { error: 'Email không hợp lệ' });
+            }
+
+            // Tìm người dùng theo email và loại
+            let user;
+            if (userType === 'admin') {
+                user = await adminModel.findOne({ email });
+            } else if (userType === 'seller') {
+                user = await sellerModel.findOne({ email });
+            } else {
+                return responseReturn(res, 400, { error: 'Loại tài khoản không hợp lệ' });
+            }
+
+            if (!user) {
+                return responseReturn(res, 404, { error: 'Không tìm thấy tài khoản với email này' });
+            }
+
+            // Tạo token ngẫu nhiên
+            const resetToken = crypto.randomBytes(32).toString('hex');
+
+            // Lưu token vào database
+            await passwordResetModel.create({
+                email,
+                token: resetToken,
+                userType
+            });
+
+            // Gửi email đặt lại mật khẩu
+            await emailService.sendPasswordResetEmail(email, user.name, resetToken);
+
+            responseReturn(res, 200, { message: 'Đã gửi email hướng dẫn đặt lại mật khẩu' });
+
+        } catch (error) {
+            console.error('Lỗi yêu cầu đặt lại mật khẩu:', error);
+            responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    };
+
+    /**
+     * Đặt lại mật khẩu
+     */
+    reset_password = async (req, res) => {
+        const { token, password } = req.body;
+
+        try {
+            if (!token || !password) {
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp token và mật khẩu mới' });
+            }
+
+            // Kiểm tra độ mạnh của mật khẩu mới
+            const passwordValidation = validatePassword(password);
+            if (!passwordValidation.isValid) {
+                return responseReturn(res, 400, { error: passwordValidation.message });
+            }
+
+            // Tìm token trong database
+            const resetRequest = await passwordResetModel.findOne({ token });
+
+            if (!resetRequest) {
+                return responseReturn(res, 400, { error: 'Token không hợp lệ hoặc đã hết hạn' });
+            }
+
+            // Hash mật khẩu mới
+            const hashedPassword = await bcrpty.hash(password, 10);
+
+            // Cập nhật mật khẩu mới cho người dùng
+            if (resetRequest.userType === 'admin') {
+                await adminModel.findOneAndUpdate(
+                    { email: resetRequest.email },
+                    { password: hashedPassword }
+                );
+            } else if (resetRequest.userType === 'seller') {
+                await sellerModel.findOneAndUpdate(
+                    { email: resetRequest.email },
+                    { password: hashedPassword }
+                );
+            }
+
+            // Xóa token đã sử dụng
+            await passwordResetModel.deleteOne({ token });
+
+            responseReturn(res, 200, { message: 'Đặt lại mật khẩu thành công' });
+
+        } catch (error) {
+            console.error('Lỗi đặt lại mật khẩu:', error);
             responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
         }
     };

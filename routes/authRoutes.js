@@ -11,6 +11,10 @@ router.post('/profile-info-add',authMiddleware, authControllers.profile_info_add
 
 router.post('/change-password',authMiddleware, authControllers.change_password)
 
+// Thêm các route cho quên mật khẩu và đặt lại mật khẩu
+router.post('/forgot-password', authControllers.forgot_password)
+router.post('/reset-password', authControllers.reset_password)
+
 router.get('/logout',authMiddleware, authControllers.logout)
 
 module.exports = router 

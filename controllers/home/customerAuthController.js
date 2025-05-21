@@ -6,6 +6,10 @@ const {createToken} = require('../../utils/tokenCreate')
 const cloudinaryConfig = require('../../config/cloudinary')
 const fs = require('fs')
 const { validatePassword, validateEmail } = require('../../middlewares/validate')
+const emailService = require('../../services/emailService')
+const passwordResetModel = require('../../models/passwordResetModel')
+const crypto = require('crypto')
+const moment = require('moment')
 
 class customerAuthController {
     customer_register = async(req, res) => {
@@ -63,6 +67,10 @@ class customerAuthController {
                 secure: process.env.NODE_ENV === 'production'
             })
 
+            // Gửi email chào mừng
+            emailService.sendWelcomeEmail(createCustomer.email, createCustomer.name, 'customer')
+                .catch(err => console.error('Không thể gửi email chào mừng:', err))
+
             return responseReturn(res, 201, {
                 message: 'Đăng ký thành công',
                 token,
@@ -116,6 +124,12 @@ class customerAuthController {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production'
             })
+
+            // Gửi email thông báo đăng nhập
+            const time = moment().format('HH:mm DD/MM/YYYY')
+            const device = req.headers['user-agent'] || 'Unknown device'
+            emailService.sendLoginNotification(customer.email, customer.name, time, device)
+                .catch(err => console.error('Không thể gửi email thông báo đăng nhập:', err))
 
             return responseReturn(res, 200, {
                 message: 'Đăng nhập thành công',
@@ -276,6 +290,87 @@ class customerAuthController {
         } catch (error) {
             console.error('Lỗi lấy thông tin người dùng:', error.message);
             return responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    }
+
+    forgot_password = async(req, res) => {
+        const { email } = req.body;
+
+        try {
+            if (!email) {
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp email' });
+            }
+
+            // Kiểm tra email có hợp lệ không
+            if (!validateEmail(email)) {
+                return responseReturn(res, 400, { error: 'Email không hợp lệ' });
+            }
+
+            // Tìm khách hàng theo email
+            const customer = await customerModel.findOne({ email });
+            if (!customer) {
+                return responseReturn(res, 404, { error: 'Không tìm thấy tài khoản với email này' });
+            }
+
+            // Tạo token ngẫu nhiên
+            const resetToken = crypto.randomBytes(32).toString('hex');
+
+            // Lưu token vào database
+            await passwordResetModel.create({
+                email,
+                token: resetToken,
+                userType: 'customer'
+            });
+
+            // Gửi email đặt lại mật khẩu
+            await emailService.sendPasswordResetEmail(email, customer.name, resetToken);
+
+            responseReturn(res, 200, { message: 'Đã gửi email hướng dẫn đặt lại mật khẩu' });
+
+        } catch (error) {
+            console.error('Lỗi yêu cầu đặt lại mật khẩu:', error.message);
+            responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
+        }
+    }
+
+    reset_password = async(req, res) => {
+        const { token, password } = req.body;
+
+        try {
+            if (!token || !password) {
+                return responseReturn(res, 400, { error: 'Vui lòng cung cấp token và mật khẩu mới' });
+            }
+
+            // Kiểm tra độ mạnh của mật khẩu mới
+            const passwordValidation = validatePassword(password);
+            if (!passwordValidation.isValid) {
+                return responseReturn(res, 400, { error: passwordValidation.message });
+            }
+
+            // Tìm token trong database
+            const resetRequest = await passwordResetModel.findOne({ token });
+
+            if (!resetRequest || resetRequest.userType !== 'customer') {
+                return responseReturn(res, 400, { error: 'Token không hợp lệ hoặc đã hết hạn' });
+            }
+
+            // Hash mật khẩu mới
+            const hashedPassword = await bcrypt.hash(password, 10);
+
+            // Cập nhật mật khẩu mới cho khách hàng
+            await customerModel.findOneAndUpdate(
+                { email: resetRequest.email },
+                { password: hashedPassword }
+            );
+
+            // Xóa token đã sử dụng
+            await passwordResetModel.deleteOne({ token });
+
+            responseReturn(res, 200, { message: 'Đặt lại mật khẩu thành công' });
+
+        } catch (error) {
+            console.error('Lỗi đặt lại mật khẩu:', error.message);
+            responseReturn(res, 500, { error: 'Lỗi máy chủ nội bộ' });
         }
     }
 }

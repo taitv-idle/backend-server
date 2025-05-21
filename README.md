@@ -24,6 +24,47 @@ The application offers multiple chatbot options:
    - Free tier available with API limits
    - Requires Google AI Studio account - see setup guide in docs/gemini-setup.md
 
+## Email Notifications with Mailgun
+
+Hệ thống đã tích hợp Mailgun để gửi thông báo email cho các sự kiện sau:
+
+1. **Đăng ký tài khoản**: Gửi email chào mừng cho người dùng mới
+2. **Đăng nhập**: Thông báo đăng nhập cho người dùng
+3. **Quên mật khẩu**: Gửi link đặt lại mật khẩu
+
+### Cấu hình Mailgun
+
+Để sử dụng tính năng gửi email, bạn cần thêm các biến môi trường sau vào file `.env`:
+
+```
+MAILGUN_API_KEY=your_mailgun_api_key
+MAILGUN_DOMAIN=your_mailgun_domain
+MAILGUN_SENDER=Ecommerce <no-reply@your_mailgun_domain>
+CLIENT_URL=http://localhost:3000
+```
+
+### Cài đặt
+
+```bash
+npm install form-data mailgun.js
+```
+
+### Sử dụng
+
+Dịch vụ email đã được tích hợp vào các controller xử lý đăng nhập, đăng ký và đặt lại mật khẩu. Bạn có thể sử dụng trực tiếp dịch vụ email trong các controller khác bằng cách:
+
+```javascript
+const emailService = require('../services/emailService');
+
+// Gửi email tùy chỉnh
+await emailService.sendEmail(
+  'recipient@example.com',
+  'Tiêu đề email',
+  'Nội dung text',
+  '<p>Nội dung HTML</p>'
+);
+```
+
 ## Getting Started
 
 1. Clone the repository
