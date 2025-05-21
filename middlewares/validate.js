@@ -14,24 +14,12 @@ try {
 
 const { responseReturn } = require('../utils/response');
 
-/**
- * Validate phone number format
- * @param {string} phone - Phone number to validate
- * @returns {boolean} - True if phone number is valid
- */
 const validatePhoneNumber = (phone) => {
-    // Vietnamese phone number format
-    // Mobile: 09xxxxxxx, 03xxxxxxx, 07xxxxxxx, 08xxxxxxx
-    // Landline: 02xxxxxxx
+
     const phoneRegex = /^(0[2|3|7|8|9])+([0-9]{8})$/;
     return phoneRegex.test(phone);
 };
 
-/**
- * Validate password strength
- * @param {string} password - Password to validate
- * @returns {Object} - Contains validation result and error message if any
- */
 const validatePassword = (password) => {
     // Kiểm tra độ dài tối thiểu
     if (!password || password.length < 8) {
@@ -79,11 +67,7 @@ const validatePassword = (password) => {
     };
 };
 
-/**
- * Validate email format
- * @param {string} email - Email to validate
- * @returns {boolean} - True if email is valid
- */
+
 const validateEmail = (email) => {
     const emailRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}$/;
     return emailRegex.test(email);
