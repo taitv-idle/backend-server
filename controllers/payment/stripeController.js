@@ -7,6 +7,7 @@ const sellerWallet = require('../../models/sellerWallet');
 const moment = require('moment');
 const mongoose = require('mongoose');
 const { mongo: { ObjectId } } = mongoose;
+const productModel = require('../../models/productModel');
 
 class StripeController {
     // Tạo payment intent
@@ -345,6 +346,33 @@ class StripeController {
                         month: splitTime[0],
                         year: splitTime[2]
                     }], { session });
+                }
+
+                // Cập nhật số lượng sản phẩm trong kho và số lượng đã bán
+                for (const sellerOrder of auOrder) {
+                    for (const product of sellerOrder.products) {
+                        const productDoc = await productModel.findById(product.productId).session(session);
+                        if (!productDoc) {
+                            throw new Error(`Không tìm thấy sản phẩm với ID: ${product.productId}`);
+                        }
+                        
+                        if (productDoc.stock < product.quantity) {
+                            throw new Error(`Sản phẩm ${productDoc.name} không đủ số lượng trong kho`);
+                        }
+                        
+                        await productModel.findByIdAndUpdate(
+                            product.productId,
+                            { 
+                                $inc: { 
+                                    stock: -product.quantity,
+                                    sold: product.quantity
+                                } 
+                            },
+                            { session }
+                        );
+                        
+                        console.log(`Đã cập nhật sản phẩm ${product.productId}: giảm ${product.quantity} đơn vị stock, tăng ${product.quantity} đơn vị sold`);
+                    }
                 }
 
                 await session.commitTransaction();
