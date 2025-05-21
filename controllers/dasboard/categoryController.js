@@ -97,7 +97,7 @@ class categoryController {
             }
 
             const trimmedName = name.trim();
-            const slug = trimmedName.split(' ').join('-');
+            const slug = removeVietnameseTones(trimmedName);
             const updateData = { name: trimmedName, slug };
 
             try {
