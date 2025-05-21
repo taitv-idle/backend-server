@@ -1,7 +1,9 @@
+const mongoose = require('mongoose');
 const sellerModel = require('../../models/sellerModel');
 const stripeModel = require('../../models/stripeModel');
 const sellerWallet = require('../../models/sellerWallet');
 const withdrowRequest = require('../../models/withdrowRequest');
+const myShopWallet = require('../../models/myShopWallet');
 const { v4: uuidv4 } = require('uuid');
 const { responseReturn } = require('../../utils/response');
 const { mongo: { ObjectId } } = require('mongoose');
@@ -33,8 +35,18 @@ class PaymentController {
             const account = await stripe.accounts.create({
                 type: 'express',
                 capabilities: {
-                    transfers: { requested: true }
-                }
+                    transfers: { requested: true },
+                    card_payments: { requested: true }
+                },
+                settings: {
+                    payouts: {
+                        schedule: {
+                            interval: 'manual'
+                        }
+                    }
+                },
+                country: 'VN',
+                default_currency: 'vnd'
             });
 
             const accountLink = await stripe.accountLinks.create({
@@ -192,14 +204,14 @@ get_payment_request = async (req, res) => {
  * Xác nhận và xử lý yêu cầu rút tiền
  */
 payment_request_confirm = async (req, res) => {
-    const { paymentId } = req.body;
+    const { paymentId, amountInUSD } = req.body;
 
     const session = await mongoose.startSession();
     try {
         session.startTransaction();
 
         // Kiểm tra yêu cầu
-        const payment = await withdrowRequest.findById(paymentId).session(session);
+        const payment = await withdrowRequest.findOne({ _id: paymentId.id || paymentId }).session(session);
         if (!payment) {
             throw new Error('Không tìm thấy yêu cầu thanh toán');
         }
@@ -215,21 +227,61 @@ payment_request_confirm = async (req, res) => {
 
         // Kiểm tra tài khoản Stripe hợp lệ
         const account = await stripe.accounts.retrieve(stripeAccount.stripeId);
+        console.log('Stripe account details:', {
+            id: account.id,
+            payouts_enabled: account.payouts_enabled,
+            details_submitted: account.details_submitted,
+            charges_enabled: account.charges_enabled,
+            capabilities: account.capabilities
+        });
+        
         if (!account.details_submitted || account.payouts_enabled !== true) {
             throw new Error('Tài khoản thanh toán chưa sẵn sàng nhận tiền');
         }
 
+        // Kiểm tra số dư tài khoản
+        const balance = await stripe.balance.retrieve();
+        console.log('Available balance:', balance.available);
+
+        // Xác định số tiền USD để chuyển
+        let amount;
+        if (typeof paymentId === 'object' && paymentId.amountInUSD) {
+            // Nếu paymentId là đối tượng và có amountInUSD
+            amount = parseFloat(paymentId.amountInUSD);
+        } else if (amountInUSD) {
+            // Nếu amountInUSD được cung cấp riêng
+            amount = parseFloat(amountInUSD);
+        } else {
+            // Sử dụng số tiền từ payment, giả sử đã được chuyển đổi sang USD
+            amount = parseFloat(payment.amount / 22000); // Tỷ giá VND/USD ước tính
+        }
+
+        console.log('Amount to transfer (USD):', amount);
+
+        // Kiểm tra tính hợp lệ của số tiền
+        if (isNaN(amount) || amount <= 0) {
+            throw new Error('Số tiền không hợp lệ');
+        }
+
+        // Chuyển đổi số tiền USD sang cents (Stripe yêu cầu số tiền nhỏ nhất là cents)
+        const amountInCents = Math.round(amount * 100);
+        
+        // Kiểm tra lại để đảm bảo amountInCents là số nguyên dương
+        if (!Number.isInteger(amountInCents) || amountInCents <= 0) {
+            throw new Error('Số tiền sau quy đổi không hợp lệ');
+        }
+
         // Thực hiện chuyển tiền
         const transfer = await stripe.transfers.create({
-            amount: payment.amount * 1000, // Chuyển sang VND
-            currency: 'vnd',
+            amount: amountInCents,
+            currency: 'usd',
             destination: stripeAccount.stripeId,
-            description: `Rút tiền cho seller ${payment.sellerId}`
+            description: `Rút tiền cho seller ${payment.sellerId} (${amount} USD)`
         });
 
         // Cập nhật trạng thái yêu cầu
-        await withdrowRequest.findByIdAndUpdate(
-            paymentId,
+        await withdrowRequest.findOneAndUpdate(
+            { _id: paymentId.id || paymentId },
             {
                 status: 'success',
                 transferId: transfer.id,
@@ -251,10 +303,13 @@ payment_request_confirm = async (req, res) => {
 
         // Cập nhật trạng thái thất bại
         if (paymentId) {
-            await withdrowRequest.findByIdAndUpdate(paymentId, {
-                status: 'failed',
-                failureReason: error.message
-            });
+            await withdrowRequest.findOneAndUpdate(
+                { _id: paymentId.id || paymentId },
+                {
+                    status: 'failed',
+                    failureReason: error.message
+                }
+            );
         }
 
         responseReturn(res, 500, {
@@ -262,6 +317,238 @@ payment_request_confirm = async (req, res) => {
         });
     } finally {
         session.endSession();
+    }
+}
+
+/**
+ * Lấy lịch sử thanh toán cho admin
+ */
+get_all_payment_history = async (req, res) => {
+    try {
+        // Lấy tham số phân trang từ query
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+        const search = req.query.search || '';
+        const status = req.query.status || '';
+
+        // Xây dựng điều kiện tìm kiếm
+        let query = {};
+        
+        if (status) {
+            query.status = status;
+        }
+        
+        if (search) {
+            // Tìm seller IDs phù hợp với từ khóa tìm kiếm
+            const sellers = await sellerModel.find({
+                $or: [
+                    { name: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } }
+                ]
+            }).select('_id');
+            
+            const sellerIds = sellers.map(seller => seller._id.toString());
+            if (sellerIds.length > 0) {
+                query.sellerId = { $in: sellerIds };
+            }
+        }
+
+        // Lấy tổng số yêu cầu rút tiền
+        const totalWithdrawals = await withdrowRequest.countDocuments(query);
+        
+        // Lấy danh sách yêu cầu rút tiền với phân trang
+        const withdrawals = await withdrowRequest.find(query)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+        
+        // Lấy thông tin chi tiết của seller cho mỗi yêu cầu
+        const withdrawalDetails = [];
+        for (const withdrawal of withdrawals) {
+            const seller = await sellerModel.findById(withdrawal.sellerId).select('name email shopInfo');
+            
+            withdrawalDetails.push({
+                ...withdrawal._doc,
+                seller: seller ? {
+                    name: seller.name,
+                    email: seller.email,
+                    shopName: seller.shopInfo?.shopName || 'N/A'
+                } : { name: 'Unknown', email: 'Unknown', shopName: 'Unknown' }
+            });
+        }
+        
+        // Tính toán tổng số tiền đã rút và đang chờ xử lý
+        const totalWithdrawnAmount = await withdrowRequest.aggregate([
+            { $match: { status: 'success' } },
+            { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        
+        const totalPendingAmount = await withdrowRequest.aggregate([
+            { $match: { status: 'pending' } },
+            { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        
+        // Thống kê theo tháng/năm
+        const currentYear = new Date().getFullYear();
+        const monthlyStats = await sellerWallet.aggregate([
+            { 
+                $match: { year: currentYear } 
+            },
+            {
+                $group: {
+                    _id: '$month',
+                    total: { $sum: '$amount' }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+        
+        responseReturn(res, 200, {
+            withdrawals: withdrawalDetails,
+            totalWithdrawals,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalWithdrawals / limit),
+                totalItems: totalWithdrawals,
+                perPage: limit
+            },
+            stats: {
+                totalWithdrawnAmount: totalWithdrawnAmount[0]?.total || 0,
+                totalPendingAmount: totalPendingAmount[0]?.total || 0,
+                monthlyStats
+            }
+        });
+    } catch (error) {
+        console.log('Get payment history error:', error.message);
+        responseReturn(res, 500, { message: 'Lỗi khi lấy lịch sử thanh toán' });
+    }
+}
+
+/**
+ * Lấy tổng quan về doanh thu cho admin
+ */
+get_admin_payment_overview = async (req, res) => {
+    try {
+        const currentDate = new Date();
+        const currentYear = currentDate.getFullYear();
+        const currentMonth = currentDate.getMonth() + 1; // JavaScript tháng bắt đầu từ 0
+        
+        // Lấy doanh thu của shop theo tháng trong năm hiện tại
+        const shopMonthlyRevenue = await myShopWallet.aggregate([
+            { 
+                $match: { year: currentYear } 
+            },
+            {
+                $group: {
+                    _id: '$month',
+                    total: { $sum: '$amount' }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+        
+        // Lấy doanh thu của các sellers theo tháng trong năm hiện tại
+        const sellersMonthlyRevenue = await sellerWallet.aggregate([
+            { 
+                $match: { year: currentYear } 
+            },
+            {
+                $group: {
+                    _id: { month: '$month', sellerId: '$sellerId' },
+                    total: { $sum: '$amount' }
+                }
+            },
+            { $sort: { '_id.month': 1 } }
+        ]);
+        
+        // Tổng doanh thu của shop
+        const totalShopRevenue = await myShopWallet.aggregate([
+            { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        
+        // Tổng doanh thu của tháng hiện tại
+        const currentMonthRevenue = await myShopWallet.aggregate([
+            { 
+                $match: { 
+                    year: currentYear,
+                    month: currentMonth
+                } 
+            },
+            { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        
+        // Tổng doanh thu của tháng trước
+        const lastMonthRevenue = await myShopWallet.aggregate([
+            { 
+                $match: { 
+                    year: currentMonth === 1 ? currentYear - 1 : currentYear,
+                    month: currentMonth === 1 ? 12 : currentMonth - 1
+                } 
+            },
+            { $group: { _id: null, total: { $sum: '$amount' } } }
+        ]);
+        
+        // Top 5 sellers có doanh thu cao nhất
+        const topSellers = await sellerWallet.aggregate([
+            {
+                $group: {
+                    _id: '$sellerId',
+                    total: { $sum: '$amount' }
+                }
+            },
+            { $sort: { total: -1 } },
+            { $limit: 5 }
+        ]);
+        
+        // Lấy thông tin chi tiết của top sellers
+        const topSellersDetails = [];
+        for (const seller of topSellers) {
+            const sellerInfo = await sellerModel.findById(seller._id).select('name email shopInfo');
+            if (sellerInfo) {
+                topSellersDetails.push({
+                    sellerId: seller._id,
+                    name: sellerInfo.name,
+                    email: sellerInfo.email,
+                    shopName: sellerInfo.shopInfo?.shopName || 'N/A',
+                    total: seller.total
+                });
+            }
+        }
+        
+        // Tính tỷ lệ tăng trưởng so với tháng trước
+        const currentMonthTotal = currentMonthRevenue[0]?.total || 0;
+        const lastMonthTotal = lastMonthRevenue[0]?.total || 0;
+        
+        let growthRate = 0;
+        if (lastMonthTotal > 0) {
+            growthRate = ((currentMonthTotal - lastMonthTotal) / lastMonthTotal) * 100;
+        } else if (currentMonthTotal > 0) {
+            growthRate = 100; // Nếu tháng trước là 0 và tháng này > 0, tăng trưởng 100%
+        }
+        
+        responseReturn(res, 200, {
+            totalRevenue: totalShopRevenue[0]?.total || 0,
+            currentMonthRevenue: currentMonthTotal,
+            lastMonthRevenue: lastMonthTotal,
+            growthRate: parseFloat(growthRate.toFixed(2)),
+            shopMonthlyRevenue,
+            topSellers: topSellersDetails,
+            yearlyData: {
+                year: currentYear,
+                months: Array.from({ length: 12 }, (_, i) => {
+                    const month = i + 1;
+                    const monthData = shopMonthlyRevenue.find(item => item._id === month);
+                    return {
+                        month,
+                        revenue: monthData ? monthData.total : 0
+                    };
+                })
+            }
+        });
+    } catch (error) {
+        console.log('Get admin payment overview error:', error.message);
+        responseReturn(res, 500, { message: 'Lỗi khi lấy tổng quan thanh toán' });
     }
 }
 }

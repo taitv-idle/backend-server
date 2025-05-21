@@ -12,6 +12,8 @@ router.post('/payment/withdrowal-request',authMiddleware,paymentController.withd
 router.get('/payment/request',authMiddleware,paymentController.get_payment_request)
 router.post('/payment/request-confirm',authMiddleware,paymentController.payment_request_confirm)
 
- 
- 
+// Admin: Xem lịch sử thanh toán
+router.get('/admin/payment/history',authMiddleware,paymentController.get_all_payment_history)
+router.get('/admin/payment/overview',authMiddleware,paymentController.get_admin_payment_overview)
+
 module.exports = router 
