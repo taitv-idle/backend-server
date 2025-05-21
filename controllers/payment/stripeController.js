@@ -84,27 +84,24 @@ class StripeController {
             // Kiểm tra giá tiền có khớp với đơn hàng không
             // Chuyển đổi cả hai giá trị về số và so sánh
             const orderPrice = typeof order.price === 'string' ? parseFloat(order.price) : order.price;
-            if (Math.abs(orderPrice - numericPrice) > 0.01) { // Cho phép sai số nhỏ do chuyển đổi số thập phân
-                console.log('Price mismatch:', {
+            
+            // Luôn sử dụng giá từ đơn hàng thay vì giá gửi lên để đảm bảo chính xác
+            const correctPrice = orderPrice;
+            
+            // Ghi log nếu có sự khác biệt giữa giá gửi lên và giá đơn hàng
+            if (orderPrice !== numericPrice) {
+                console.log('Price mismatch - using order price instead:', {
                     orderPrice,
                     inputPrice: numericPrice,
                     difference: Math.abs(orderPrice - numericPrice)
                 });
-                return responseReturn(res, 400, {
-                    message: 'Giá tiền không khớp với đơn hàng',
-                    success: false,
-                    details: {
-                        orderPrice,
-                        inputPrice: numericPrice
-                    }
-                });
             }
-
-            // Tạo payment intent (sử dụng VND)
-            const amount = Math.round(numericPrice);
+            
+            // Số tiền ban đầu (VND)
+            const amountInVND = Math.round(correctPrice);
             
             console.log('Creating payment intent:', {
-                amount,
+                amountInVND,
                 orderId,
                 customerId: order.customerId.toString()
             });
@@ -119,17 +116,37 @@ class StripeController {
                     });
                 }
 
+                // Đối với tài khoản Stripe ở Việt Nam, luôn sử dụng USD
+                // Chuyển đổi từ VND sang USD
+                const exchangeRate = process.env.USD_VND_RATE || 22000;
+                const amountInUSD = (amountInVND / exchangeRate).toFixed(2);
+                const amountInCents = Math.round(parseFloat(amountInUSD) * 100); // Đổi sang cents
+                
+                console.log('Payment amount conversion:', {
+                    amountInVND,
+                    amountInUSD,
+                    amountInCents,
+                    exchangeRate
+                });
+                
+                // Tạo payment intent với USD
                 const paymentIntent = await stripe.paymentIntents.create({
-                    amount: amount,
-                    currency: 'vnd',
+                    amount: amountInCents,
+                    currency: 'usd',
                     metadata: { 
                         orderId,
-                        customerId: order.customerId.toString()
+                        customerId: order.customerId.toString(),
+                        originalAmount: amountInVND,
+                        originalCurrency: 'vnd',
+                        exchangeRate
                     },
-                    description: `Thanh toán cho đơn hàng #${orderId}`,
+                    description: `Thanh toán đơn hàng #${orderId} (${amountInVND.toLocaleString('vi-VN')} VND)`,
                     payment_method_types: ['card'],
+                    // Thêm thông tin hiển thị cho khách hàng
+                    statement_descriptor: 'Thanh toan don hang',
+                    statement_descriptor_suffix: 'ECOMMERCE',
                     capture_method: 'automatic',
-                    confirm: false // Không xác nhận ngay lập tức
+                    confirm: false
                 });
 
                 console.log('Payment intent created successfully:', {
@@ -143,7 +160,13 @@ class StripeController {
                 return responseReturn(res, 200, {
                     clientSecret: paymentIntent.client_secret,
                     paymentIntentId: paymentIntent.id,
-                    success: true
+                    currency: 'usd',
+                    amountUSD: amountInUSD,
+                    amountVND: amountInVND,
+                    amountVNDFormatted: amountInVND.toLocaleString('vi-VN') + ' VND',
+                    exchangeRate,
+                    success: true,
+                    message: 'Đã tạo phiên thanh toán thành công'
                 });
             } catch (stripeError) {
                 console.error('Stripe API error:', {
@@ -241,15 +264,39 @@ class StripeController {
                 const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
                 console.log('Payment intent status:', {
                     id: paymentIntent.id,
-                    status: paymentIntent.status
+                    status: paymentIntent.status,
+                    currency: paymentIntent.currency,
+                    metadata: paymentIntent.metadata
                 });
 
+                // Kiểm tra trạng thái thanh toán
                 if (paymentIntent.status !== 'succeeded') {
-                    return responseReturn(res, 400, {
-                        message: 'Thanh toán chưa được xác nhận',
-                        success: false,
-                        paymentStatus: paymentIntent.status
-                    });
+                    // Nếu chưa thành công, thử xác nhận
+                    if (paymentIntent.status === 'requires_confirmation') {
+                        try {
+                            const confirmedIntent = await stripe.paymentIntents.confirm(paymentIntentId);
+                            if (confirmedIntent.status !== 'succeeded') {
+                                return responseReturn(res, 400, {
+                                    message: 'Không thể xác nhận thanh toán',
+                                    success: false,
+                                    paymentStatus: confirmedIntent.status
+                                });
+                            }
+                        } catch (confirmError) {
+                            console.error('Payment confirmation error:', confirmError);
+                            return responseReturn(res, 400, {
+                                message: 'Lỗi khi xác nhận thanh toán',
+                                success: false,
+                                error: confirmError.message
+                            });
+                        }
+                    } else {
+                        return responseReturn(res, 400, {
+                            message: 'Thanh toán chưa được xác nhận',
+                            success: false,
+                            paymentStatus: paymentIntent.status
+                        });
+                    }
                 }
 
                 // Kiểm tra payment intent có thuộc về đơn hàng này không
