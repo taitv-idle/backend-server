@@ -1,16 +1,8 @@
 const formidable = require("formidable");
 const { responseReturn } = require("../../utils/response");
-const cloudinary = require('cloudinary').v2;
+const cloudinaryConfig = require('../../config/cloudinary');
 const productModel = require('../../models/productModel');
 const { createSlug } = require('../../utils/createSlug');
-
-// Cấu hình Cloudinary một lần
-cloudinary.config({
-    cloud_name: process.env.cloud_name,
-    api_key: process.env.api_key,
-    api_secret: process.env.api_secret,
-    secure: true
-});
 
 class ProductController {
     add_product = async (req, res) => {
@@ -41,7 +33,7 @@ class ProductController {
                 const imageFiles = Array.isArray(images) ? images : [images];
 
                 for (let i = 0; i < imageFiles.length; i++) {
-                    const result = await cloudinary.uploader.upload(imageFiles[i].filepath, { folder: 'products' });
+                    const result = await cloudinaryConfig.uploader.upload(imageFiles[i].filepath, { folder: 'products' });
                     allImageUrl.push(result.url);
                 }
 
@@ -264,7 +256,7 @@ class ProductController {
                     return responseReturn(res, 400, { error: 'Hình ảnh cũ không tồn tại trong danh sách' });
                 }
 
-                const result = await cloudinary.uploader.upload(newImage.filepath, { folder: 'products' });
+                const result = await cloudinaryConfig.uploader.upload(newImage.filepath, { folder: 'products' });
                 product.images[index] = result.url;
 
                 await product.save();

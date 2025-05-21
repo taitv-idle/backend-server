@@ -3,8 +3,9 @@ const { responseReturn } = require('../../utils/response')
 const bcrypt = require('bcrypt')
 const sellerCustomerModel = require('../../models/chat/sellerCustomerModel')
 const {createToken} = require('../../utils/tokenCreate')
-const cloudinary = require('../../config/cloudinary')
+const cloudinaryConfig = require('../../config/cloudinary')
 const fs = require('fs')
+const { validatePassword, validateEmail } = require('../../middlewares/validate')
 
 class customerAuthController {
     customer_register = async(req, res) => {
@@ -14,6 +15,17 @@ class customerAuthController {
             // Validate input
             if (!name || !email || !password) {
                 return responseReturn(res, 400, { error: 'Vui lòng điền đầy đủ thông tin' })
+            }
+
+            // Validate email format
+            if (!validateEmail(email)) {
+                return responseReturn(res, 400, { error: 'Email không hợp lệ' })
+            }
+
+            // Validate password strength
+            const passwordValidation = validatePassword(password)
+            if (!passwordValidation.isValid) {
+                return responseReturn(res, 400, { error: passwordValidation.message })
             }
 
             // Check if email already exists
@@ -162,7 +174,7 @@ class customerAuthController {
             if (req.file) {
                 try {
                     // Upload to cloudinary
-                    const { public_id, secure_url } = await cloudinary.uploader.upload(req.file.path, {
+                    const { public_id, secure_url } = await cloudinaryConfig.uploader.upload(req.file.path, {
                         folder: 'ecommerce/customers'
                     });
                     
@@ -178,7 +190,7 @@ class customerAuthController {
                     // Delete old image if exists
                     const customer = await customerModel.findById(id);
                     if (customer?.image?.public_id) {
-                        await cloudinary.uploader.destroy(customer.image.public_id);
+                        await cloudinaryConfig.uploader.destroy(customer.image.public_id);
                     }
                 } catch (cloudinaryError) {
                     console.error('Lỗi tải ảnh lên Cloudinary:', cloudinaryError);

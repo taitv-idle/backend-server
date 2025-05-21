@@ -9,7 +9,6 @@ const authOrder = require('../../models/authOrder')
 const sellerCustomerMessage = require('../../models/chat/sellerCustomerMessage') 
 const bannerModel = require('../../models/bannerModel') 
 const { mongo: {ObjectId}} = require('mongoose')
-const cloudinary = require('cloudinary').v2
 const formidable = require("formidable")
 
 class dashboardController{
@@ -350,16 +349,12 @@ class dashboardController{
         const {productId} = field
         const { mainban } = files
 
-        cloudinary.config({
-            cloud_name: process.env.cloud_name,
-            api_key: process.env.api_key,
-            api_secret: process.env.api_secret,
-            secure: true
-        })
+        // Sử dụng cấu hình Cloudinary từ file config
+        const cloudinaryConfig = require('../../config/cloudinary')
         
         try {
             const {slug} = await productModel.findById(productId) 
-            const result = await cloudinary.uploader.upload(mainban.filepath, {folder: 'banners'})
+            const result = await cloudinaryConfig.uploader.upload(mainban.filepath, {folder: 'banners'})
             const banner = await bannerModel.create({
                 productId,
                 banner: result.url,
@@ -393,21 +388,17 @@ class dashboardController{
     form.parse(req, async(err,_,files)=> {
         const {mainban} = files
 
-        cloudinary.config({
-            cloud_name: process.env.cloud_name,
-            api_key: process.env.api_key,
-            api_secret: process.env.api_secret,
-            secure: true
-        })
+        // Sử dụng cấu hình Cloudinary từ file config
+        const cloudinaryConfig = require('../../config/cloudinary')
 
         try {
             let banner = await bannerModel.findById(bannerId)
             let temp = banner.banner.split('/')
             temp = temp[temp.length - 1]
             const imageName = temp.split('.')[0]
-            await cloudinary.uploader.destroy(imageName)
+            await cloudinaryConfig.uploader.destroy(imageName)
 
-            const {url } =  await cloudinary.uploader.upload(mainban.filepath, {folder: 'banners'})
+            const {url} = await cloudinaryConfig.uploader.upload(mainban.filepath, {folder: 'banners'})
 
             await bannerModel.findByIdAndUpdate(bannerId,{
                 banner: url

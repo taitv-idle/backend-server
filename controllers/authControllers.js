@@ -6,6 +6,7 @@ const bcrpty = require('bcrypt');
 const { createToken } = require('../utils/tokenCreate');
 const cloudinary = require('cloudinary').v2;
 const formidable = require('formidable');
+const { validatePassword, validateEmail } = require('../middlewares/validate');
 
 class AuthControllers {
     /**
@@ -101,6 +102,22 @@ class AuthControllers {
         const { email, name, password } = req.body;
 
         try {
+            // Kiểm tra đầy đủ thông tin
+            if (!email || !name || !password) {
+                return responseReturn(res, 400, { error: 'Vui lòng điền đầy đủ thông tin' });
+            }
+
+            // Kiểm tra định dạng email
+            if (!validateEmail(email)) {
+                return responseReturn(res, 400, { error: 'Email không hợp lệ' });
+            }
+
+            // Kiểm tra độ mạnh của mật khẩu
+            const passwordValidation = validatePassword(password);
+            if (!passwordValidation.isValid) {
+                return responseReturn(res, 400, { error: passwordValidation.message });
+            }
+
             // Kiểm tra email đã tồn tại chưa
             const existingSeller = await sellerModel.findOne({ email });
 
@@ -110,8 +127,8 @@ class AuthControllers {
 
             // Tạo seller mới với password đã hash
             const seller = await sellerModel.create({
-                name,
-                email,
+                name: name.trim(),
+                email: email.trim(),
                 password: await bcrpty.hash(password, 10), // Hash password với salt rounds = 10
                 method: 'manual',
                 shopInfo: {}
@@ -178,14 +195,9 @@ class AuthControllers {
     profile_image_upload = async (req, res) => {
         const { id } = req;
 
-        // Cấu hình Cloudinary
-        cloudinary.config({
-            cloud_name: process.env.cloud_name,
-            api_key: process.env.api_key,
-            api_secret: process.env.api_secret,
-            secure: true
-        });
-
+        // Sử dụng cấu hình Cloudinary từ file config
+        const cloudinaryConfig = require('../config/cloudinary');
+        
         const form = formidable({ multiples: true });
 
         form.parse(req, async (err, _, files) => {
@@ -202,7 +214,7 @@ class AuthControllers {
 
             try {
                 // Upload ảnh lên Cloudinary
-                const result = await cloudinary.uploader.upload(image.filepath, {
+                const result = await cloudinaryConfig.uploader.upload(image.filepath, {
                     folder: 'profile'
                 });
 
@@ -286,6 +298,17 @@ class AuthControllers {
         const { email, old_password, new_password } = req.body;
 
         try {
+            // Kiểm tra đầy đủ thông tin
+            if (!email || !old_password || !new_password) {
+                return responseReturn(res, 400, { error: 'Vui lòng điền đầy đủ thông tin' });
+            }
+
+            // Kiểm tra độ mạnh của mật khẩu mới
+            const passwordValidation = validatePassword(new_password);
+            if (!passwordValidation.isValid) {
+                return responseReturn(res, 400, { error: passwordValidation.message });
+            }
+
             // Tìm seller theo email, bao gồm password
             const user = await sellerModel.findOne({ email }).select('+password');
 

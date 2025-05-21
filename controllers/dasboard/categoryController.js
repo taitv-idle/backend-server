@@ -1,15 +1,7 @@
 const formidable = require("formidable");
 const { responseReturn } = require("../../utils/response");
-const cloudinary = require('cloudinary').v2;
+const cloudinaryConfig = require('../../config/cloudinary');
 const categoryModel = require('../../models/categoryModel');
-
-// Cấu hình Cloudinary
-cloudinary.config({
-    cloud_name: process.env.cloud_name,
-    api_key: process.env.api_key,
-    api_secret: process.env.api_secret,
-    secure: true
-});
 
 // Hàm chuyển đổi tiếng Việt có dấu thành không dấu
 const removeVietnameseTones = (str) => {
@@ -51,7 +43,7 @@ class categoryController {
                 }
 
                 // Tiến hành upload ảnh lên Cloudinary và tạo danh mục mới
-                const result = await cloudinary.uploader.upload(image.filepath, { folder: 'categorys' });
+                const result = await cloudinaryConfig.uploader.upload(image.filepath, { folder: 'categorys' });
                 const category = await categoryModel.create({
                     name: trimmedName,
                     slug,
@@ -110,7 +102,7 @@ class categoryController {
 
             try {
                 if (image && image.filepath) {
-                    const result = await cloudinary.uploader.upload(image.filepath, { folder: 'categorys' });
+                    const result = await cloudinaryConfig.uploader.upload(image.filepath, { folder: 'categorys' });
                     updateData.image = result.url;
                 }
 

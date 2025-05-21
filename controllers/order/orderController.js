@@ -9,7 +9,7 @@ const moment = require("moment")
 const { responseReturn } = require('../../utils/response')
 const { mongo: {ObjectId}} = require('mongoose')
 const {config} = require("dotenv");
-const { validatePhoneNumber } = require('../../utils/validators');
+const { validatePhoneNumber } = require('../../middlewares/validate');
 // Cấu hình Stripe
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 
